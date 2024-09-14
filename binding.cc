@@ -53,7 +53,7 @@ NAPI_METHOD(regex_test) {
 
     int length;
     NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[3], &length));
-    length = std::max(0, std::min<int>(length - offset, size - offset));
+    length = std::max(0, std::min<int>(length, size - offset));
 
     text = std::string_view(buf + offset, length);
   }
@@ -124,7 +124,7 @@ NAPI_METHOD(set_test) {
 
     int length;
     NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[3], &length));
-    length = std::max(0, std::min<int>(length - offset, size - offset));
+    length = std::max(0, std::min<int>(length, size - offset));
 
     text = std::string_view(buf + offset, length);
   }
