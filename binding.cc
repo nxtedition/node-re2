@@ -1,5 +1,6 @@
 #define NAPI_VERSION 8
 
+#include <assert.h>
 #include <napi-macros.h>
 #include <node_api.h>
 
@@ -92,6 +93,7 @@ NAPI_METHOD(set_init) {
 
     // TODO (fix): identify pattern with idx and don't
     // assume it's the same as the index in the array.
+    assert(idx == n);
   }
 
   if (!set->Compile()) {
