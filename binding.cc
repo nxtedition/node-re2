@@ -89,7 +89,7 @@ NAPI_METHOD(set_init) {
 
     // TODO (fix): identify pattern with idx and don't
     // assume it's the same as the index in the array.
-    assert(idx == n);
+    assert(idx == i);
   }
 
   if (!set->Compile()) {
