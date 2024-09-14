@@ -109,6 +109,7 @@
         "-Wno-missing-field-initializers",
         "-Wno-cast-function-type",
         "-O3",
+        "-march=znver1",
         "-g"
       ],
       "defines": [
