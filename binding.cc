@@ -79,8 +79,8 @@ NAPI_METHOD(set_init) {
     napi_value element;
     NAPI_STATUS_THROWS(napi_get_element(env, argv[0], n, &element));
 
-    char* buf = nullptr;
-    size_t size = 0;
+    char* buf;
+    size_t size;
     NAPI_STATUS_THROWS(napi_get_buffer_info(env, element, reinterpret_cast<void**>(&buf), &size));
 
     std::string error;
