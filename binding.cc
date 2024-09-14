@@ -21,9 +21,9 @@ NAPI_METHOD(regex_init) {
   std::string_view pattern;
   {
     char* buf = nullptr;
-    size_t length = 0;
-    NAPI_STATUS_THROWS(napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&buf), &length));
-    pattern = std::string_view(buf, length);
+    size_t size = 0;
+    NAPI_STATUS_THROWS(napi_get_buffer_info(env, argv[0], reinterpret_cast<void**>(&buf), &size));
+    pattern = std::string_view(buf, size);
   }
 
   auto regex = std::make_unique<re2::RE2>(pattern);
@@ -36,21 +36,30 @@ NAPI_METHOD(regex_init) {
 }
 
 NAPI_METHOD(regex_test) {
-  NAPI_ARGV(2);
+  NAPI_ARGV(4);
 
   re2::RE2* regex;
   NAPI_STATUS_THROWS(napi_get_value_external(env, argv[0], reinterpret_cast<void**>(&regex)));
 
-  std::string_view value;
+  std::string_view text;
   {
     char* buf = nullptr;
-    size_t length = 0;
-    NAPI_STATUS_THROWS(napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&buf), &length));
-    value = std::string_view(buf, length);
+    size_t size = 0;
+    NAPI_STATUS_THROWS(napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&buf), &size));
+
+    int offset;
+    NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[2], &offset));
+    offset = std::max(0, std::min<int>(offset, size));
+
+    int length;
+    NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[3], &length));
+    length = std::max(0, std::min<int>(length - offset, size - offset));
+
+    text = std::string_view(buf + offset, length);
   }
 
   napi_value result;
-  NAPI_STATUS_THROWS(napi_get_boolean(env, re2::RE2::PartialMatch(value, *regex), &result));
+  NAPI_STATUS_THROWS(napi_get_boolean(env, re2::RE2::PartialMatch(text, *regex), &result));
   return result;
 }
 
@@ -71,11 +80,11 @@ NAPI_METHOD(set_init) {
     NAPI_STATUS_THROWS(napi_get_element(env, argv[0], n, &element));
 
     char* buf = nullptr;
-    size_t length = 0;
-    NAPI_STATUS_THROWS(napi_get_buffer_info(env, element, reinterpret_cast<void**>(&buf), &length));
+    size_t size = 0;
+    NAPI_STATUS_THROWS(napi_get_buffer_info(env, element, reinterpret_cast<void**>(&buf), &size));
 
     std::string error;
-    auto idx = set->Add(std::string_view(buf, length), &error) ;
+    auto idx = set->Add(std::string_view(buf, size), &error) ;
     if (idx < 0) {
       napi_throw_error(env, nullptr, error.c_str());
       return nullptr;
@@ -98,17 +107,26 @@ NAPI_METHOD(set_init) {
 }
 
 NAPI_METHOD(set_test) {
-  NAPI_ARGV(2);
+  NAPI_ARGV(4);
 
   re2::RE2::Set* set;
   NAPI_STATUS_THROWS(napi_get_value_external(env, argv[0], reinterpret_cast<void**>(&set)));
 
   std::string_view text;
   {
-    char* buf = nullptr;
-    size_t length = 0;
-    NAPI_STATUS_THROWS(napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&buf), &length));
-    text = std::string_view(buf, length);
+    char* buf;
+    size_t size ;
+    NAPI_STATUS_THROWS(napi_get_buffer_info(env, argv[1], reinterpret_cast<void**>(&buf), &size));
+
+    int offset;
+    NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[2], &offset));
+    offset = std::max(0, std::min<int>(offset, size));
+
+    int length;
+    NAPI_STATUS_THROWS(napi_get_value_int32(env, argv[3], &length));
+    length = std::max(0, std::min<int>(length - offset, size - offset));
+
+    text = std::string_view(buf + offset, length);
   }
 
   napi_value result;
