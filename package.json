@@ -1,0 +1,23 @@
+{
+  "name": "@nxtedition/re2",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "install-artifact-from-github": "^1.3.5",
+    "nan": "^2.20.0",
+    "napi-macros": "^2.2.2",
+    "node-gyp": "^10.2.0",
+    "node-gyp-build": "^4.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "neostandard": "^17.0.0"
+  },
+  "scripts": {
+    "install": "npx node-gyp-build",
+    "test": "node --test",
+    "rebuild": "JOBS=8 npm run install --build-from-source"
+  },
+  "license": "MIT"
+}
