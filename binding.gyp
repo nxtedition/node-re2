@@ -101,6 +101,7 @@
         "vendor/abseil-cpp/absl/time/time.cc",
       ],
       "cflags": [
+        "-fexceptions",
         "-std=c++2a",
         "-Wall",
         "-Wextra",
@@ -111,6 +112,10 @@
         "-O3",
         "-march=znver1",
         "-g"
+      ],
+      'cflags_cc': [
+        "-fexceptions",
+        "-march=znver1",
       ],
       "defines": [
         "NDEBUG",
@@ -127,6 +132,7 @@
         "CLANG_CXX_LIBRARY": "libc++",
         "OTHER_CFLAGS": [
           "-std=c++2a",
+          "-fexceptions",
           "-Wall",
           "-Wextra",
           "-Wno-sign-compare",
