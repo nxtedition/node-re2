@@ -11,9 +11,7 @@
 
 template <typename T>
 static void Finalize(napi_env env, void* data, void* hint) {
-  if (hint) {
-    delete reinterpret_cast<T*>(hint);
-  }
+  delete reinterpret_cast<T*>(data);
 }
 
 NAPI_METHOD(regex_init) {
@@ -31,7 +29,7 @@ NAPI_METHOD(regex_init) {
     auto regex = std::make_unique<re2::RE2>(pattern);
 
     napi_value result;
-    NAPI_STATUS_THROWS(napi_create_external(env, regex.get(), Finalize<re2::RE2>, regex.get(), &result));
+    NAPI_STATUS_THROWS(napi_create_external(env, regex.get(), Finalize<re2::RE2>, nullptr, &result));
     regex.release();
 
     return result;
@@ -90,7 +88,7 @@ NAPI_METHOD(set_init) {
       auto idx = set->Add(std::string_view(buf, buf_len), &error) ;
       if (idx < 0) {
         napi_throw_error(env, nullptr, error.c_str());
-        return nullptr;
+        return nullptr;c
       }
 
       // TODO (fix): identify pattern with idx and don't
@@ -104,7 +102,7 @@ NAPI_METHOD(set_init) {
     }
 
     napi_value result;
-    NAPI_STATUS_THROWS(napi_create_external(env, set.get(), Finalize<re2::RE2::Set>, set.get(), &result));
+    NAPI_STATUS_THROWS(napi_create_external(env, set.get(), Finalize<re2::RE2::Set>, nullptr, &result));
     set.release();
 
     return result;

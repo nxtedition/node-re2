@@ -14,7 +14,7 @@
     "@types/node": "^22.5.0"
   },
   "scripts": {
-    "install": "npx node-gyp-build",
+    "install": "node-gyp-build",
     "test": "node --test",
     "rebuild": "JOBS=8 npm run install --build-from-source"
   },
