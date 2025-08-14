@@ -88,7 +88,7 @@ NAPI_METHOD(set_init) {
       auto idx = set->Add(std::string_view(buf, buf_len), &error) ;
       if (idx < 0) {
         napi_throw_error(env, nullptr, error.c_str());
-        return nullptr;c
+        return nullptr;
       }
 
       // TODO (fix): identify pattern with idx and don't
