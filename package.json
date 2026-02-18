@@ -11,7 +11,7 @@
     "node-gyp-build": "^4.8.2"
   },
   "devDependencies": {
-    "@types/node": "^22.5.0"
+    "@types/node": "^25.2.3"
   },
   "scripts": {
     "install": "node-gyp-build",
