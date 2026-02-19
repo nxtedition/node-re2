@@ -3,6 +3,7 @@
   "version": "1.0.9",
   "type": "module",
   "main": "index.js",
+  "types": "index.d.ts",
   "dependencies": {
     "install-artifact-from-github": "^1.3.5",
     "nan": "^2.20.0",
