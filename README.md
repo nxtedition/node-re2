@@ -18,7 +18,7 @@ Invalid RE2 syntax throws during construction. `RE2Set#test()` returns every mat
 
 ## Prebuilds
 
-Release tarballs include Node-API prebuilds for `darwin-arm64` and glibc `linux-x64`. The Linux binary is built in the Node 26 Bookworm image for compatibility with both Bookworm and newer glibc systems, and is libc-tagged so it is never selected on musl. Other platforms fall back to a source build when install scripts are enabled.
+Release tarballs include Node-API prebuilds for `darwin-arm64` and glibc `linux-x64`. The Linux binary is built in the Node 26 Bookworm image with `-march=znver3 -mtune=znver3`, enabling AVX2 and targeting Zen 3-compatible deployment CPUs. It is compatible with Bookworm and newer glibc systems, and is libc-tagged so it is never selected on musl. Other platforms fall back to a portable source build when install scripts are enabled; Linux x64 source builds can opt into the same tuning with `NODE_RE2_MARCH=znver3`.
 
 `./build.sh` builds and tests the Linux prebuild in Docker. On an arm64 Mac, `./release.sh` builds both supported platforms, tests the current platform with source-build fallback disabled, verifies that both binaries are present in the npm tarball, and then prompts for the version bump before publishing.
 

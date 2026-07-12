@@ -1,4 +1,7 @@
 {
+  "variables": {
+    "node_re2_march%": "<!(node -p \"process.env.NODE_RE2_MARCH || ''\")"
+  },
   "targets": [
     {
       "target_name": "binding",
@@ -150,6 +153,18 @@
           ],
           "ldflags": [
             "-pthread"
+          ],
+          "conditions": [
+            ["target_arch==\"x64\" and node_re2_march!=\"\"", {
+              "cflags": [
+                "-march=<(node_re2_march)",
+                "-mtune=<(node_re2_march)"
+              ],
+              "cflags_cc": [
+                "-march=<(node_re2_march)",
+                "-mtune=<(node_re2_march)"
+              ]
+            }]
           ]
         }],
       ]
