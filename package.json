@@ -1,6 +1,6 @@
 {
   "name": "@nxtedition/re2",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Fast RE2 partial matching for Node.js",
   "type": "module",
   "main": "index.js",
