@@ -149,12 +149,22 @@ test('supports synchronous CommonJS loading', () => {
 
 test('native addon has no unresolved vendored symbols', {
   skip: process.platform === 'win32' ? 'nm is not available on Windows' : false
-}, () => {
+}, context => {
   const bindingPath = nodeGypBuild.path(import.meta.dirname)
   const symbols = spawnSync('nm', ['-u', bindingPath], { encoding: 'utf8' })
+  if (symbols.error?.code === 'ENOENT') {
+    context.skip('nm is not available')
+    return
+  }
+  assert.ifError(symbols.error)
   assert.equal(symbols.status, 0, symbols.stderr)
 
   const demangled = spawnSync('c++filt', { input: symbols.stdout, encoding: 'utf8' })
+  if (demangled.error?.code === 'ENOENT') {
+    context.skip('c++filt is not available')
+    return
+  }
+  assert.ifError(demangled.error)
   assert.equal(demangled.status, 0, demangled.stderr)
   const unresolvedVendoredSymbols = demangled.stdout
     .split('\n')
