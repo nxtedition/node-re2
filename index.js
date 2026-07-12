@@ -1,22 +1,46 @@
+import { Buffer } from 'node:buffer'
 import binding from './binding.js'
+
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {NodeJS.ArrayBufferView}
+ */
+function asBinaryView(value, name) {
+  if (!ArrayBuffer.isView(value)) {
+    throw new TypeError(`${name} must be a Buffer, TypedArray, or DataView`)
+  }
+  return value
+}
+
+/**
+ * @param {unknown} pattern
+ * @returns {NodeJS.ArrayBufferView}
+ */
+function encodePattern(pattern) {
+  return typeof pattern === 'string'
+    ? Buffer.from(pattern)
+    : asBinaryView(pattern, 'pattern')
+}
 
 export class RE2 {
   #context
 
   /**
-   * @param {string | Buffer} pattern
+   * @param {string | NodeJS.ArrayBufferView} pattern
    */
   constructor(pattern) {
-    this.#context = binding.regex_init(typeof pattern === 'string' ? Buffer.from(pattern) : pattern)
+    this.#context = binding.regex_init(encodePattern(pattern))
   }
 
   /**
-   * @param {Buffer} buffer
+   * @param {NodeJS.ArrayBufferView} buffer
    * @param {number} [byteOffset]
    * @param {number} [byteLength]
    * @returns {boolean} True if the pattern matches, false otherwise.
    */
   test(buffer, byteOffset, byteLength) {
+    buffer = asBinaryView(buffer, 'buffer')
     if (byteOffset === undefined) {
       byteOffset = 0
     }
@@ -31,19 +55,23 @@ export class RE2Set {
   #context
 
   /**
-   * @param {(string | Buffer)[]} patterns
+   * @param {readonly (string | NodeJS.ArrayBufferView)[]} patterns
    */
   constructor(patterns) {
-    this.#context = binding.set_init(patterns.map(pattern => typeof pattern === 'string' ? Buffer.from(pattern) : pattern))
+    if (!Array.isArray(patterns)) {
+      throw new TypeError('patterns must be an array')
+    }
+    this.#context = binding.set_init(Array.from(patterns, encodePattern))
   }
 
   /**
-   * @param {Buffer} buffer
+   * @param {NodeJS.ArrayBufferView} buffer
    * @param {number} [byteOffset]
    * @param {number} [byteLength]
-   * @returns {number[]} An array of the indices of the patterns that matched, or an empty array if no patterns matched.
+   * @returns {number[]} The indices of the matching patterns in unspecified order, or an empty array if no patterns matched.
    */
   test(buffer, byteOffset, byteLength) {
+    buffer = asBinaryView(buffer, 'buffer')
     if (byteOffset === undefined) {
       byteOffset = 0
     }
