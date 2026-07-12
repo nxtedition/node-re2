@@ -11,4 +11,5 @@ test('RE2', () => {
 test('Set', () => {
   const expr = new RE2Set(['foo', 'o', 'bar'])
   assert.deepStrictEqual(expr.test(Buffer.from('foo')), [1, 0])
+  assert.deepStrictEqual(expr.test(Buffer.from('baz')), [])
 })
