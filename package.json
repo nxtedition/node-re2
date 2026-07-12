@@ -1,23 +1,83 @@
 {
   "name": "@nxtedition/re2",
   "version": "1.0.11",
+  "description": "Fast RE2 partial matching for Node.js",
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "require": "./index.js",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "binding.cc",
+    "binding.gyp",
+    "binding.js",
+    "index.d.ts",
+    "index.js",
+    "prebuilds",
+    "THIRD_PARTY.md",
+    "vendor/abseil-cpp/absl",
+    "vendor/abseil-cpp/LICENSE",
+    "vendor/re2/re2",
+    "vendor/re2/util/rune.cc",
+    "vendor/re2/util/strutil.cc",
+    "vendor/re2/util/strutil.h",
+    "vendor/re2/util/utf.h",
+    "vendor/re2/LICENSE",
+    "!vendor/**/testdata/**",
+    "!vendor/**/testing/**",
+    "!vendor/**/*_test.c",
+    "!vendor/**/*_test.cc",
+    "!vendor/**/*_test.h",
+    "!vendor/**/test_*.c",
+    "!vendor/**/test_*.cc",
+    "!vendor/**/test_*.h",
+    "!vendor/**/*_benchmark.cc",
+    "!vendor/**/*_benchmark.h",
+    "!vendor/**/benchmarks.cc",
+    "!vendor/**/*_test*.*",
+    "!vendor/**/*_testing*.*",
+    "!vendor/**/*_benchmark*.*",
+    "!vendor/**/*_benchmarks*.*",
+    "!vendor/**/CMakeLists.txt",
+    "!vendor/**/BUILD",
+    "!vendor/**/BUILD.bazel"
+  ],
+  "engines": {
+    "node": ">=26"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nxtedition/node-re2.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nxtedition/node-re2/issues"
+  },
+  "homepage": "https://github.com/nxtedition/node-re2#readme",
   "dependencies": {
-    "install-artifact-from-github": "^1.3.5",
-    "nan": "^2.20.0",
-    "napi-macros": "^2.2.2",
-    "node-gyp": "^10.2.0",
-    "node-gyp-build": "^4.8.2"
+    "node-gyp": "^13.0.1",
+    "node-gyp-build": "^4.8.4"
   },
   "devDependencies": {
-    "@types/node": "^25.2.3"
+    "@types/node": "^26.1.1",
+    "prebuildify": "^6.0.1",
+    "typescript": "^7.0.2"
   },
   "scripts": {
     "install": "node-gyp-build",
-    "test": "node --test",
-    "rebuild": "JOBS=8 npm run install --build-from-source"
+    "build": "node-gyp rebuild --jobs=max",
+    "pretest": "npm run build",
+    "test": "node --test && npm run test:types",
+    "test:prebuild": "PREBUILDS_ONLY=1 node --test && npm run test:types",
+    "test:types": "tsc --noEmit",
+    "verify:prebuilds": "node scripts/verify-prebuilds.mjs",
+    "rebuild": "npm_config_build_from_source=true node-gyp-build",
+    "release": "./release.sh"
   },
   "gypfile": true,
   "license": "MIT"

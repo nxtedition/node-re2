@@ -1,15 +1,17 @@
+export type BinaryView = ArrayBufferView;
+
 export class RE2 {
-  constructor(pattern: string | Buffer);
+  constructor(pattern: string | BinaryView);
   /**
    * @returns True if the pattern matches, false otherwise.
    */
-  test(buffer: Buffer, byteOffset?: number, byteLength?: number): boolean;
+  test(buffer: BinaryView, byteOffset?: number, byteLength?: number): boolean;
 }
 
 export class RE2Set {
-  constructor(patterns: (string | Buffer)[]);
+  constructor(patterns: readonly (string | BinaryView)[]);
   /**
-   * @returns An array of the indices of the patterns that matched, or an empty array if no patterns matched.
+   * @returns The indices of the matching patterns in unspecified order, or an empty array if no patterns matched.
    */
-  test(buffer: Buffer, byteOffset?: number, byteLength?: number): number[];
+  test(buffer: BinaryView, byteOffset?: number, byteLength?: number): number[];
 }
