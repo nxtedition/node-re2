@@ -135,15 +135,13 @@ NAPI_METHOD(set_test) {
     napi_value result;
 
     std::vector<int> indices;
-    if (!set->Match(text, &indices)) {
-      NAPI_STATUS_THROWS(napi_get_null(env, &result));
-    } else {
-      NAPI_STATUS_THROWS(napi_create_array_with_length(env, indices.size(), &result));
-      for (size_t n = 0; n < indices.size(); n++) {
-        napi_value element;
-        NAPI_STATUS_THROWS(napi_create_int32(env, indices[n], &element));
-        NAPI_STATUS_THROWS(napi_set_element(env, result, n, element));
-      }
+    set->Match(text, &indices);
+
+    NAPI_STATUS_THROWS(napi_create_array_with_length(env, indices.size(), &result));
+    for (size_t n = 0; n < indices.size(); n++) {
+      napi_value element;
+      NAPI_STATUS_THROWS(napi_create_int32(env, indices[n], &element));
+      NAPI_STATUS_THROWS(napi_set_element(env, result, n, element));
     }
 
     return result;
