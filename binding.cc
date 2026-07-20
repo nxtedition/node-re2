@@ -312,11 +312,13 @@ void ParallelFor(size_t size, Function&& function) {
 #ifdef NODE_RE2_PARALLEL
   constexpr size_t kInputsPerThread = 64;
   constexpr size_t kMaxThreads = 8;
-  constexpr size_t kChunkSize = 8;
+  constexpr size_t kBatchesPerThread = 16;
   const size_t hardware_threads = std::max<size_t>(std::thread::hardware_concurrency(), 1);
   const size_t thread_count =
       std::min({hardware_threads, kMaxThreads, (size + kInputsPerThread - 1) / kInputsPerThread});
   if (thread_count > 1) {
+    const size_t batch_count = thread_count * kBatchesPerThread;
+    const size_t batch_size = (size + batch_count - 1) / batch_count;
     std::atomic<size_t> next{0};
     std::atomic<bool> stopped{false};
     std::mutex error_mutex;
@@ -324,11 +326,11 @@ void ParallelFor(size_t size, Function&& function) {
     const auto run = [&] {
       try {
         while (!stopped.load(std::memory_order_relaxed)) {
-          const size_t begin = next.fetch_add(kChunkSize, std::memory_order_relaxed);
+          const size_t begin = next.fetch_add(batch_size, std::memory_order_relaxed);
           if (begin >= size) {
             return;
           }
-          const size_t end = std::min(begin + kChunkSize, size);
+          const size_t end = std::min(begin + batch_size, size);
           for (size_t index = begin; index < end; ++index) {
             function(index);
           }

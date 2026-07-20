@@ -1,7 +1,6 @@
 {
   "variables": {
-    "node_re2_march%": "<!(node -p \"process.env.NODE_RE2_MARCH || ''\")",
-    "node_re2_parallel%": "<!(node -p \"process.env.NODE_RE2_PARALLEL === '1' ? '1' : '0'\")"
+    "node_re2_march%": "<!(node -p \"process.env.NODE_RE2_MARCH || ''\")"
   },
   "targets": [
     {
@@ -156,11 +155,6 @@
             "-pthread"
           ],
           "conditions": [
-            ["node_re2_parallel==\"1\"", {
-              "defines": [
-                "NODE_RE2_PARALLEL=1"
-              ]
-            }],
             ["target_arch==\"x64\" and node_re2_march!=\"\"", {
               "cflags": [
                 "-march=<(node_re2_march)",
