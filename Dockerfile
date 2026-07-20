@@ -31,3 +31,6 @@ RUN npm run test:prebuild
 FROM scratch AS artifact
 
 COPY --from=build /node-re2/prebuilds/linux-x64/@nxtedition+re2.glibc.node /
+
+# Keep an unqualified Docker build runnable for development and benchmarks.
+FROM build AS tested
