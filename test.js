@@ -313,7 +313,7 @@ describe('RE2Set', () => {
   })
 })
 
-test('supports synchronous CommonJS loading', async () => {
+test('supports CommonJS loading and async compilation', async () => {
   const require = createRequire(import.meta.url)
   const commonjs = require('@nxtedition/re2')
 

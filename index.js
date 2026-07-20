@@ -74,7 +74,6 @@ export class RE2Set {
 
   /**
    * @param {readonly (string | NodeJS.ArrayBufferView)[]} patterns
-   * @param {unknown} [context]
    */
   constructor(patterns, context) {
     if (patterns === kCompiledContext) {
