@@ -158,6 +158,11 @@
             "-pthread",
             "-fopenmp"
           ],
+          "libraries": [
+            "-Wl,-Bstatic",
+            "-lgomp",
+            "-Wl,-Bdynamic"
+          ],
           "conditions": [
             ["target_arch==\"x64\" and node_re2_march!=\"\"", {
               "cflags": [
