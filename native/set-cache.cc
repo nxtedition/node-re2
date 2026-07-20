@@ -247,10 +247,10 @@ SharedSet RunSetCompilation(const PendingSetCompilation& pending, bool* unexpect
             cache.key_bytes -= cache.entries.front().encoded_patterns.size();
             evicted.splice(evicted.end(), cache.entries, cache.entries.begin());
           }
-          ErasePendingLocked(cache, pending);
         } catch (...) {
-          pending->unexpected_failure = false;
+          // Cache admission is best-effort; the compiled set remains usable.
         }
+        ErasePendingLocked(cache, pending);
       }
     }
     pending->ready.notify_all();
