@@ -100,6 +100,13 @@ describe('RE2', () => {
     assert.deepEqual(expression.testMany([]), [])
     assert.throws(() => expression.testMany('match-1'), TypeError)
     assert.throws(() => expression.testMany([Buffer.from('match-1'), 'match-2']), TypeError)
+    const oversizedInputs = []
+    oversizedInputs.length = 2 ** 20 + 1
+    assert.throws(() => expression.testMany(oversizedInputs), /Too many inputs/)
+    assert.throws(
+      () => binding.set_test_many(binding.set_init([Buffer.from('match')]), oversizedInputs),
+      /Too many inputs/
+    )
   })
 
   test('matches byte ranges and clamps them without 32-bit wrapping', () => {

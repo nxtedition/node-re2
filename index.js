@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer'
 import binding from './binding.js'
 
 const kCompiledContext = Symbol('compiledContext')
+const MAX_BATCH_INPUT_COUNT = 2 ** 20
 
 /**
  * @param {unknown} value
@@ -23,6 +24,20 @@ function encodePattern(pattern) {
   return typeof pattern === 'string'
     ? Buffer.from(pattern)
     : asBinaryView(pattern, 'pattern')
+}
+
+/**
+ * @param {unknown} inputs
+ * @returns {NodeJS.ArrayBufferView[]}
+ */
+function encodeInputs(inputs) {
+  if (!Array.isArray(inputs)) {
+    throw new TypeError('inputs must be an array')
+  }
+  if (inputs.length > MAX_BATCH_INPUT_COUNT) {
+    throw new RangeError('Too many inputs')
+  }
+  return Array.from(inputs, input => asBinaryView(input, 'input'))
 }
 
 export class RE2 {
@@ -59,13 +74,7 @@ export class RE2 {
    * @returns {boolean[]}
    */
   testMany(inputs) {
-    if (!Array.isArray(inputs)) {
-      throw new TypeError('inputs must be an array')
-    }
-    return binding.regex_test_many(
-      this.#context,
-      Array.from(inputs, input => asBinaryView(input, 'input'))
-    )
+    return binding.regex_test_many(this.#context, encodeInputs(inputs))
   }
 }
 
@@ -127,12 +136,6 @@ export class RE2Set {
    * @returns {number[][]}
    */
   testMany(inputs) {
-    if (!Array.isArray(inputs)) {
-      throw new TypeError('inputs must be an array')
-    }
-    return binding.set_test_many(
-      this.#context,
-      Array.from(inputs, input => asBinaryView(input, 'input'))
-    )
+    return binding.set_test_many(this.#context, encodeInputs(inputs))
   }
 }

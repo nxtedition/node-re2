@@ -28,6 +28,7 @@
 namespace {
 
 constexpr size_t kSetCompileCacheMaxSize = 16;
+constexpr uint32_t kMaxBatchInputCount = 1 << 20;
 
 struct ByteView {
   const char* data;
@@ -289,6 +290,10 @@ bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* tex
 
   uint32_t input_count = 0;
   if (!Check(env, napi_get_array_length(env, value, &input_count), "Failed to read inputs")) {
+    return false;
+  }
+  if (input_count > kMaxBatchInputCount) {
+    napi_throw_range_error(env, nullptr, "Too many inputs");
     return false;
   }
 
