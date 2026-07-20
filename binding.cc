@@ -312,7 +312,11 @@ void ParallelFor(size_t size, Function&& function) {
 #ifdef NODE_RE2_PARALLEL
   constexpr size_t kInputsPerThread = 64;
   constexpr size_t kMaxThreads = 8;
+#ifdef NODE_RE2_BATCHES_PER_THREAD
+  constexpr size_t kBatchesPerThread = NODE_RE2_BATCHES_PER_THREAD;
+#else
   constexpr size_t kBatchesPerThread = 16;
+#endif
   const size_t hardware_threads = std::max<size_t>(std::thread::hardware_concurrency(), 1);
   const size_t thread_count =
       std::min({hardware_threads, kMaxThreads, (size + kInputsPerThread - 1) / kInputsPerThread});
