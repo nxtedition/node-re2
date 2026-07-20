@@ -1,4 +1,4 @@
-export type BinaryView = ArrayBufferView<ArrayBufferLike>
+export type BinaryView = ArrayBufferView
 export type Pattern = string | BinaryView
 
 export interface TestManyOptions {
