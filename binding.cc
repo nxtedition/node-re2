@@ -24,6 +24,14 @@ struct ByteView {
   size_t size;
 };
 
+struct SetCompileWork {
+  napi_async_work work = nullptr;
+  napi_deferred deferred = nullptr;
+  std::vector<std::string> patterns;
+  std::unique_ptr<re2::RE2::Set> set;
+  std::string error;
+};
+
 bool Check(napi_env env, napi_status status, const char* operation) {
   if (status == napi_ok) {
     return true;
@@ -207,6 +215,68 @@ bool GetText(napi_env env, napi_value input, napi_value offset_value,
   return true;
 }
 
+bool GetPatterns(napi_env env, napi_value value,
+                 std::vector<std::string>* patterns) {
+  bool is_array = false;
+  if (!Check(env, napi_is_array(env, value, &is_array),
+             "Failed to inspect patterns")) {
+    return false;
+  }
+  if (!is_array) {
+    napi_throw_type_error(env, nullptr, "patterns must be an array");
+    return false;
+  }
+
+  uint32_t pattern_count = 0;
+  if (!Check(env, napi_get_array_length(env, value, &pattern_count),
+             "Failed to read patterns")) {
+    return false;
+  }
+  if (pattern_count > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+    napi_throw_range_error(env, nullptr, "Too many patterns");
+    return false;
+  }
+
+  patterns->reserve(pattern_count);
+  for (uint32_t index = 0; index < pattern_count; ++index) {
+    napi_value pattern_value;
+    if (!Check(env, napi_get_element(env, value, index, &pattern_value),
+               "Failed to read pattern")) {
+      return false;
+    }
+    ByteView pattern;
+    if (!GetByteView(env, pattern_value, &pattern)) {
+      return false;
+    }
+    patterns->emplace_back(pattern.data, pattern.size);
+  }
+  return true;
+}
+
+std::unique_ptr<re2::RE2::Set> CompileSet(
+    const std::vector<std::string>& patterns, std::string* error) {
+  re2::RE2::Options options;
+  options.set_log_errors(false);
+  auto set = std::make_unique<re2::RE2::Set>(options, re2::RE2::UNANCHORED);
+
+  for (size_t index = 0; index < patterns.size(); ++index) {
+    const int pattern_index = set->Add(patterns[index], error);
+    if (pattern_index < 0) {
+      return nullptr;
+    }
+    if (pattern_index != static_cast<int>(index)) {
+      *error = "Unexpected RE2Set pattern index";
+      return nullptr;
+    }
+  }
+
+  if (!set->Compile()) {
+    *error = "Failed to compile RE2Set";
+    return nullptr;
+  }
+  return set;
+}
+
 template <typename T>
 void Finalize(napi_env, void* data, void*) {
   delete static_cast<T*>(data);
@@ -358,6 +428,102 @@ napi_value SetInit(napi_env env, napi_callback_info info) {
   }
 }
 
+void SetCompileExecute(napi_env, void* data) {
+  auto* work = static_cast<SetCompileWork*>(data);
+  try {
+    work->set = CompileSet(work->patterns, &work->error);
+  } catch (const std::exception& error) {
+    work->error = error.what();
+  } catch (...) {
+    work->error = "Unknown RE2Set compilation failure";
+  }
+}
+
+void RejectDeferred(napi_env env, napi_deferred deferred,
+                    const std::string& message) {
+  napi_value message_value;
+  if (napi_create_string_utf8(env, message.c_str(), message.size(),
+                              &message_value) != napi_ok) {
+    return;
+  }
+  napi_value error;
+  if (napi_create_error(env, nullptr, message_value, &error) != napi_ok) {
+    return;
+  }
+  (void)napi_reject_deferred(env, deferred, error);
+}
+
+void SetCompileComplete(napi_env env, napi_status status, void* data) {
+  std::unique_ptr<SetCompileWork> work(static_cast<SetCompileWork*>(data));
+  (void)napi_delete_async_work(env, work->work);
+
+  if (status != napi_ok) {
+    RejectDeferred(env, work->deferred, "RE2Set compilation was cancelled");
+    return;
+  }
+  if (work->set == nullptr) {
+    RejectDeferred(
+        env, work->deferred,
+        work->error.empty() ? "Failed to compile RE2Set" : work->error);
+    return;
+  }
+
+  napi_value context;
+  if (napi_create_external(env, work->set.get(), Finalize<re2::RE2::Set>,
+                           nullptr, &context) != napi_ok) {
+    RejectDeferred(env, work->deferred,
+                   "Failed to create native RE2Set context");
+    return;
+  }
+  work->set.release();
+  (void)napi_resolve_deferred(env, work->deferred, context);
+}
+
+napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 1> arguments;
+  if (!GetArguments(env, info, &arguments)) {
+    return nullptr;
+  }
+
+  try {
+    auto work = std::make_unique<SetCompileWork>();
+    if (!GetPatterns(env, arguments[0], &work->patterns)) {
+      return nullptr;
+    }
+
+    napi_value promise;
+    if (!Check(env, napi_create_promise(env, &work->deferred, &promise),
+               "Failed to create RE2Set compilation promise")) {
+      return nullptr;
+    }
+
+    napi_value resource_name;
+    if (!Check(env,
+               napi_create_string_utf8(env, "@nxtedition/re2:compile-set",
+                                       NAPI_AUTO_LENGTH, &resource_name),
+               "Failed to create RE2Set async resource name") ||
+        !Check(env,
+               napi_create_async_work(env, nullptr, resource_name,
+                                      SetCompileExecute, SetCompileComplete,
+                                      work.get(), &work->work),
+               "Failed to create RE2Set async work")) {
+      return nullptr;
+    }
+
+    if (!Check(env, napi_queue_async_work(env, work->work),
+               "Failed to queue RE2Set async work")) {
+      (void)napi_delete_async_work(env, work->work);
+      return nullptr;
+    }
+
+    work.release();
+    return promise;
+  } catch (const std::exception& error) {
+    napi_throw_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
+
 napi_value SetTest(napi_env env, napi_callback_info info) {
   std::array<napi_value, 4> arguments;
   if (!GetArguments(env, info, &arguments)) {
@@ -433,6 +599,7 @@ NAPI_MODULE_INIT() {
   if (!ExportFunction(env, exports, "regex_init", RegexInit) ||
       !ExportFunction(env, exports, "regex_test", RegexTest) ||
       !ExportFunction(env, exports, "set_init", SetInit) ||
+      !ExportFunction(env, exports, "set_compile_async", SetCompileAsync) ||
       !ExportFunction(env, exports, "set_test", SetTest)) {
     return nullptr;
   }

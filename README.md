@@ -10,11 +10,16 @@ expression.test(Buffer.from('before foo after')) // true
 
 const expressions = new RE2Set(['foo', 'bar'])
 expressions.test(Buffer.from('bar')) // [1]
+
+const asyncExpressions = await RE2Set.compileAsync(['foo', 'bar'])
+asyncExpressions.test(Buffer.from('foo')) // [0]
 ```
 
 Patterns may be strings, Buffers, TypedArrays, or DataViews. Input must be a Buffer, TypedArray, or DataView. SharedArrayBuffer-backed views are supported. Both APIs operate on bytes; optional `byteOffset` and `byteLength` values select the input range. Negative values clamp to zero, values past the view clamp to its bounds, and fractional values are truncated.
 
-Invalid RE2 syntax throws during construction. `RE2Set#test()` returns every matching pattern index, or `[]` when nothing matches; index order is unspecified.
+Invalid RE2 syntax throws during synchronous construction and rejects `RE2Set.compileAsync()`. The asynchronous API snapshots pattern bytes before returning, compiles on the Node.js worker pool, and resolves to a normal `RE2Set`.
+
+Async compilations are cached by the complete ordered pattern bytes. Concurrent calls for the same pattern set share one in-flight compilation, and each Node.js environment retains the 16 most recently compiled sets. Failed compilations are not cached. `RE2Set#test()` returns every matching pattern index, or `[]` when nothing matches; index order is unspecified.
 
 ## Prebuilds
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { describe, test } from 'node:test'
+import { Worker } from 'node:worker_threads'
 import { RE2, RE2Set } from '@nxtedition/re2'
 import nodeGypBuild from 'node-gyp-build'
 
@@ -138,13 +139,97 @@ describe('RE2Set', () => {
     assert.deepEqual(expressions.test(bytes, 1, 3), [0])
     assert.deepEqual(expressions.test(bytes, 2 ** 32, 1), [])
   })
+
+  test('compiles asynchronously on the worker pool', async () => {
+    const expressions = await RE2Set.compileAsync(['foo', 'o', 'bar'])
+
+    assert.deepEqual(toSortedIndices(expressions.test(Buffer.from('foo'))), [0, 1])
+    assert.deepEqual(expressions.test(Buffer.from('baz')), [])
+    assert.deepEqual((await RE2Set.compileAsync([])).test(Buffer.alloc(0)), [])
+  })
+
+  test('snapshots binary pattern data before compiling', async () => {
+    const pattern = Buffer.from('async-snapshot')
+    const compilation = RE2Set.compileAsync([pattern])
+    pattern.fill(0x78)
+    const expressions = await compilation
+
+    assert.deepEqual(expressions.test(Buffer.from('async-snapshot')), [0])
+    assert.deepEqual(expressions.test(pattern), [])
+  })
+
+  test('deduplicates in-flight compilations and caches completed sets', async () => {
+    const patterns = ['^async-dedupe$', Buffer.from('cache')]
+    const first = RE2Set.compileAsync(patterns)
+    const second = RE2Set.compileAsync(['^async-dedupe$', Buffer.from('cache')])
+
+    assert.strictEqual(second, first)
+    const expressions = await first
+    assert.strictEqual(await second, expressions)
+    assert.strictEqual(await RE2Set.compileAsync(patterns), expressions)
+  })
+
+  test('bounds the completed compile cache', async () => {
+    const first = await RE2Set.compileAsync(['^async-eviction-0$'])
+    for (let index = 1; index <= 16; index += 1) {
+      await RE2Set.compileAsync([`^async-eviction-${index}$`])
+    }
+
+    assert.notStrictEqual(await RE2Set.compileAsync(['^async-eviction-0$']), first)
+  })
+
+  test('does not cache failed compilations', async () => {
+    const first = RE2Set.compileAsync(['async-invalid', '('])
+    await assert.rejects(first, Error)
+
+    const second = RE2Set.compileAsync(['async-invalid', '('])
+    assert.notStrictEqual(second, first)
+    await assert.rejects(second, Error)
+  })
+
+  test('validates compileAsync input synchronously', () => {
+    assert.throws(() => RE2Set.compileAsync('foo'), TypeError)
+    assert.throws(() => RE2Set.compileAsync([new ArrayBuffer(3)]), TypeError)
+  })
+
+  test('compiles and reuses sets inside a Worker environment', async () => {
+    const worker = new Worker(new URL('./fixtures/compile-worker.js', import.meta.url))
+    const result = await new Promise((resolve, reject) => {
+      worker.once('message', resolve)
+      worker.once('error', reject)
+      worker.once('exit', code => {
+        if (code !== 0) {
+          reject(new Error(`RE2Set worker exited with code ${code}`))
+        }
+      })
+    })
+
+    assert.equal(result, 'ok')
+  })
+
+  test('survives Worker termination with compilation in flight', async () => {
+    for (let iteration = 0; iteration < 8; iteration += 1) {
+      const worker = new Worker(
+        new URL('./fixtures/terminate-compile-worker.js', import.meta.url)
+      )
+      await new Promise((resolve, reject) => {
+        worker.once('message', resolve)
+        worker.once('error', reject)
+      })
+      assert.equal(await worker.terminate(), 1)
+    }
+  })
 })
 
-test('supports synchronous CommonJS loading', () => {
+test('supports synchronous CommonJS loading', async () => {
   const require = createRequire(import.meta.url)
   const commonjs = require('@nxtedition/re2')
 
   assert.equal(new commonjs.RE2('foo').test(Buffer.from('foo')), true)
+  assert.deepEqual(
+    (await commonjs.RE2Set.compileAsync(['foo'])).test(Buffer.from('foo')),
+    [0]
+  )
 })
 
 test('native addon has no unresolved vendored symbols', {
