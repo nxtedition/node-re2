@@ -7,6 +7,10 @@ import { RE2, RE2Set } from '@nxtedition/re2'
 import binding from '../lib/binding.js'
 
 test('reports scheduler-selected batch threads', () => {
+  assert.throws(() => binding.batch_parallelism('128', 1), TypeError)
+  assert.throws(() => binding.batch_parallelism(128, '1'), TypeError)
+  assert.throws(() => binding.batch_parallelism(128, 1, '1'), TypeError)
+  assert.throws(() => binding.batch_parallelism(-1, 1), RangeError)
   assert.equal(binding.batch_parallelism(0, 0), 0)
   assert.equal(binding.batch_parallelism(128, 128 * 64), 1)
   const expectedMaximum =

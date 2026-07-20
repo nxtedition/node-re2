@@ -132,7 +132,10 @@ describe('RE2', () => {
     assert.deepEqual(expression.testMany([]), [])
     assert.deepEqual(expression.testMany([], { batchSize: Infinity }), [])
     assert.throws(() => expression.testMany('match-1'), TypeError)
-    assert.throws(() => expression.testMany([Buffer.from('match-1'), 'match-2']), TypeError)
+    assert.throws(
+      () => expression.testMany([Buffer.from('match-1'), 'match-2']),
+      /input must be a Buffer, TypedArray, or DataView/
+    )
     assert.throws(() => expression.testMany(inputs, null), TypeError)
     assert.throws(() => expression.testMany(inputs, { batchSize: '1' }), TypeError)
     for (const batchSize of [0, -1, 1.5, Number.NaN, Number.NEGATIVE_INFINITY, 2 ** 53]) {
@@ -260,7 +263,10 @@ describe('RE2Set', () => {
     assert.deepEqual(expressions.testMany([]), [])
     assert.deepEqual(expressions.testMany([], { batchSize: Infinity }), [])
     assert.throws(() => expressions.testMany('foo-1'), TypeError)
-    assert.throws(() => expressions.testMany([Buffer.from('foo-1'), 'bar-2']), TypeError)
+    assert.throws(
+      () => expressions.testMany([Buffer.from('foo-1'), 'bar-2']),
+      /input must be a Buffer, TypedArray, or DataView/
+    )
     assert.throws(() => expressions.testMany(inputs, 1), TypeError)
     assert.throws(() => expressions.testMany(inputs, { batchSize: Symbol() }), TypeError)
     assert.deepEqual(

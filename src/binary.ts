@@ -49,7 +49,7 @@ export function normalizeInputs(inputs: unknown): BinaryView[] {
   }
   const normalized = new Array<BinaryView>(length)
   for (let index = 0; index < length; ++index) {
-    normalized[index] = inputs[index] as BinaryView
+    normalized[index] = asBinaryView(inputs[index], 'input')
   }
   return normalized
 }

@@ -15,9 +15,10 @@ bool GetSizeArgument(napi_env env, napi_value value, const char* name, size_t* r
   double number = 0;
   const napi_status status = napi_get_value_double(env, value, &number);
   if (status != napi_ok) {
-    if (status != napi_pending_exception) {
-      napi_throw_range_error(env, nullptr, name);
+    if (status == napi_pending_exception) {
+      return false;
     }
+    napi_throw_type_error(env, nullptr, name);
     return false;
   }
   if (!std::isfinite(number) || number < 0 || std::trunc(number) != number || number > kMaxSafeInteger) {
