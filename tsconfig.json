@@ -1,12 +1,16 @@
 {
   "compilerOptions": {
+    "lib": ["esnext"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "noEmit": true,
     "strict": true,
-    "target": "ES2024",
+    "target": "esnext",
     "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["index.d.ts", "type-tests/**/*.ts"]
+  "include": ["src"]
 }

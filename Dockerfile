@@ -1,4 +1,4 @@
-FROM node:26.5.0-bookworm
+FROM node:26.5.0-bookworm AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   build-essential \
@@ -16,7 +16,8 @@ COPY . .
 ARG JOBS=8
 # Match the deployment RocksDB build: the shipped x64 binary targets Zen 3,
 # enabling AVX2 while local source builds remain portable by leaving this unset.
-RUN NODE_RE2_MARCH=znver3 JOBS=$JOBS npx prebuildify \
+RUN npm run build:ts && \
+  CXXFLAGS=-DNODE_RE2_PARALLEL=1 NODE_RE2_MARCH=znver3 JOBS=$JOBS npx prebuildify \
   -t "$(node -p process.versions.node)" \
   --napi \
   --strip \
@@ -26,3 +27,10 @@ RUN NODE_RE2_MARCH=znver3 JOBS=$JOBS npx prebuildify \
 # PREBUILDS_ONLY makes node-gyp-build ignore build/Release, proving that the
 # binary which will be embedded in the npm tarball is independently loadable.
 RUN npm run test:prebuild
+
+FROM scratch AS artifact
+
+COPY --from=build /node-re2/prebuilds/linux-x64/@nxtedition+re2.glibc.node /
+
+# Keep an unqualified Docker build runnable for development and benchmarks.
+FROM build AS tested

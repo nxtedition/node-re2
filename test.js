@@ -1,11 +1,57 @@
 import assert from 'node:assert/strict'
+import { createHook } from 'node:async_hooks'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { describe, test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
+import { Worker } from 'node:worker_threads'
 import { RE2, RE2Set } from '@nxtedition/re2'
 import nodeGypBuild from 'node-gyp-build'
+import binding from './lib/binding.js'
 
 const toSortedIndices = indices => indices.toSorted((left, right) => left - right)
+const compileStats = () => binding.set_compile_cache_stats()
+
+function waitForCompileWorker(worker) {
+  return new Promise((resolve, reject) => {
+    let result
+    const timeout = setTimeout(() => reject(new Error('RE2Set worker timed out')), 10_000)
+    worker.once('message', value => {
+      result = value
+    })
+    worker.once('error', error => {
+      clearTimeout(timeout)
+      reject(error)
+    })
+    worker.once('exit', code => {
+      clearTimeout(timeout)
+      if (code === 0 && result !== undefined) {
+        resolve(result)
+      } else {
+        reject(new Error(`RE2Set worker exited with code ${code} before returning a result`))
+      }
+    })
+  })
+}
+
+async function waitFor(condition, timeout, message) {
+  const deadline = performance.now() + timeout
+  while (!condition()) {
+    if (performance.now() >= deadline) {
+      throw new Error(message)
+    }
+    await delay(1)
+  }
+}
+
+function withTimeout(promise, timeout, message) {
+  return Promise.race([
+    promise,
+    delay(timeout, undefined, { ref: false }).then(() => {
+      throw new Error(message)
+    }),
+  ])
+}
 
 describe('RE2', () => {
   test('performs partial matches', () => {
@@ -38,7 +84,7 @@ describe('RE2', () => {
       assert.throws(() => new RE2(pattern), Error)
     }
 
-    const moduleUrl = new URL('./index.js', import.meta.url).href
+    const moduleUrl = new URL('./lib/index.js', import.meta.url).href
     const child = spawnSync(
       process.execPath,
       ['--input-type=module', '--eval', `import { RE2 } from ${JSON.stringify(moduleUrl)}; try { new RE2('(') } catch {}`],
@@ -65,6 +111,59 @@ describe('RE2', () => {
     )
     assert.throws(() => new RE2(new ArrayBuffer(3)), TypeError)
     assert.throws(() => new RE2('foo').test('foo'), TypeError)
+  })
+
+  test('matches batches', () => {
+    const expression = new RE2('^match-[0-9]+$')
+    const inputs = Array.from({ length: 512 }, (_, index) =>
+      Buffer.from(index % 3 === 0 ? `match-${index}` : `miss-${index}`)
+    )
+
+    assert.deepEqual(
+      expression.testMany(inputs),
+      inputs.map(input => expression.test(input))
+    )
+    for (const batchSize of [1, 7, inputs.length, inputs.length + 1, Infinity]) {
+      assert.deepEqual(
+        expression.testMany(inputs, { batchSize }),
+        inputs.map(input => expression.test(input))
+      )
+    }
+    assert.deepEqual(expression.testMany([]), [])
+    assert.deepEqual(expression.testMany([], { batchSize: Infinity }), [])
+    assert.throws(() => expression.testMany('match-1'), TypeError)
+    assert.throws(
+      () => expression.testMany([Buffer.from('match-1'), 'match-2']),
+      /input must be a Buffer, TypedArray, or DataView/
+    )
+    assert.throws(() => expression.testMany(inputs, null), TypeError)
+    assert.throws(() => expression.testMany(inputs, { batchSize: '1' }), TypeError)
+    for (const batchSize of [0, -1, 1.5, Number.NaN, Number.NEGATIVE_INFINITY, 2 ** 53]) {
+      assert.throws(() => expression.testMany(inputs, { batchSize }), RangeError)
+    }
+    const oversizedInputs = []
+    oversizedInputs.length = 2 ** 20 + 1
+    assert.throws(() => expression.testMany(oversizedInputs), /Too many inputs/)
+    assert.throws(
+      () => binding.set_test_many(binding.set_init([Buffer.from('match')]), oversizedInputs),
+      /Too many inputs/
+    )
+
+    const proxy = new Proxy([Buffer.from('match-3'), Buffer.from('miss-1')], {})
+    assert.deepEqual(expression.testMany(proxy), [true, false])
+
+    const customIterator = [Buffer.from('match-4')]
+    customIterator[Symbol.iterator] = function* () {
+      yield Buffer.from('miss-1')
+      yield Buffer.from('miss-2')
+    }
+    assert.deepEqual(expression.testMany(customIterator), [true])
+
+    class InputArray extends Array {}
+    assert.deepEqual(
+      expression.testMany(new InputArray(Buffer.from('match-6'), Buffer.from('miss-2'))),
+      [true, false]
+    )
   })
 
   test('matches byte ranges and clamps them without 32-bit wrapping', () => {
@@ -127,6 +226,12 @@ describe('RE2Set', () => {
     const patterns = new PatternArray('foo', 'bar')
     const expressions = new RE2Set(patterns)
     assert.deepEqual(expressions.test(Buffer.from('foo')), [0])
+
+    const customIterator = ['foo']
+    customIterator[Symbol.iterator] = () => {
+      throw new Error('Pattern iterator must not be called')
+    }
+    assert.deepEqual(new RE2Set(customIterator).test(Buffer.from('foo')), [0])
     assert.throws(() => new RE2Set('foo'), TypeError)
   })
 
@@ -138,13 +243,299 @@ describe('RE2Set', () => {
     assert.deepEqual(expressions.test(bytes, 1, 3), [0])
     assert.deepEqual(expressions.test(bytes, 2 ** 32, 1), [])
   })
+
+  test('matches batches with independent RE2Set result storage', () => {
+    const expressions = new RE2Set(['^foo-[0-9]+$', '[02468]$', '^bar'])
+    const inputs = Array.from({ length: 512 }, (_, index) =>
+      Buffer.from(index % 2 === 0 ? `foo-${index}` : `bar-${index}`)
+    )
+
+    assert.deepEqual(
+      expressions.testMany(inputs).map(toSortedIndices),
+      inputs.map(input => toSortedIndices(expressions.test(input)))
+    )
+    for (const batchSize of [1, 11, inputs.length, inputs.length + 1, Infinity]) {
+      assert.deepEqual(
+        expressions.testMany(inputs, { batchSize }).map(toSortedIndices),
+        inputs.map(input => toSortedIndices(expressions.test(input)))
+      )
+    }
+    assert.deepEqual(expressions.testMany([]), [])
+    assert.deepEqual(expressions.testMany([], { batchSize: Infinity }), [])
+    assert.throws(() => expressions.testMany('foo-1'), TypeError)
+    assert.throws(
+      () => expressions.testMany([Buffer.from('foo-1'), 'bar-2']),
+      /input must be a Buffer, TypedArray, or DataView/
+    )
+    assert.throws(() => expressions.testMany(inputs, 1), TypeError)
+    assert.throws(() => expressions.testMany(inputs, { batchSize: Symbol() }), TypeError)
+    assert.deepEqual(
+      expressions.testMany(new Proxy([Buffer.from('foo-2'), Buffer.from('bar-3')], {})).map(
+        toSortedIndices
+      ),
+      [[0, 1], [2]]
+    )
+  })
+
+  test('compiles asynchronously on the worker pool', async () => {
+    const asyncResourceTypes = new Set()
+    const hook = createHook({
+      init(_asyncId, type) {
+        if (type.startsWith('@nxtedition/re2:')) {
+          asyncResourceTypes.add(type)
+        }
+      },
+    }).enable()
+    const expressions = await RE2Set.compileAsync(['foo', 'o', 'bar'])
+    hook.disable()
+
+    assert.deepEqual(toSortedIndices(expressions.test(Buffer.from('foo'))), [0, 1])
+    assert.deepEqual(expressions.test(Buffer.from('baz')), [])
+    assert.deepEqual((await RE2Set.compileAsync([])).test(Buffer.alloc(0)), [])
+    assert.ok(asyncResourceTypes.has('@nxtedition/re2:compile-set'))
+  })
+
+  test('snapshots binary pattern data before compiling', async () => {
+    const pattern = Buffer.from('async-snapshot')
+    const compilation = RE2Set.compileAsync([pattern])
+    pattern.fill(0x78)
+    const expressions = await compilation
+
+    assert.deepEqual(expressions.test(Buffer.from('async-snapshot')), [0])
+    assert.deepEqual(expressions.test(pattern), [])
+  })
+
+  test('deduplicates in-flight compilations and caches completed sets', async () => {
+    const patterns = ['^async-dedupe$', Buffer.from('cache')]
+    const before = compileStats()
+    const first = RE2Set.compileAsync(patterns)
+    const second = RE2Set.compileAsync(['^async-dedupe$', Buffer.from('cache')])
+
+    const [firstExpressions, secondExpressions] = await Promise.all([first, second])
+    assert.deepEqual(firstExpressions.test(Buffer.from('async-dedupe')), [0])
+    assert.deepEqual(secondExpressions.test(Buffer.from('cache')), [1])
+
+    const afterConcurrent = compileStats()
+    assert.equal(afterConcurrent.compilations, before.compilations + 1n)
+    assert.ok(
+      afterConcurrent.cacheHits + afterConcurrent.deduplications >=
+        before.cacheHits + before.deduplications + 1n
+    )
+
+    await RE2Set.compileAsync(patterns)
+    const afterCached = compileStats()
+    assert.equal(afterCached.compilations, afterConcurrent.compilations)
+    assert.equal(afterCached.cacheHits, afterConcurrent.cacheHits + 1n)
+  })
+
+  test('bounds the completed compile cache', async () => {
+    const retained = await RE2Set.compileAsync(['^async-eviction-0$'])
+    for (let index = 1; index <= 16; index += 1) {
+      await RE2Set.compileAsync([`^async-eviction-${index}$`])
+    }
+
+    const beforeRetry = compileStats()
+    await RE2Set.compileAsync(['^async-eviction-0$'])
+    assert.equal(compileStats().compilations, beforeRetry.compilations + 1n)
+    assert.deepEqual(retained.test(Buffer.from('async-eviction-0')), [0])
+  })
+
+  test('does not cache failed compilations', async () => {
+    const before = compileStats()
+    const first = RE2Set.compileAsync(['async-invalid', '('])
+    await assert.rejects(first, Error)
+
+    const second = RE2Set.compileAsync(['async-invalid', '('])
+    await assert.rejects(second, Error)
+    assert.equal(compileStats().compilations, before.compilations + 2n)
+  })
+
+  test('validates compileAsync input synchronously', () => {
+    assert.throws(() => RE2Set.compileAsync('foo'), TypeError)
+    assert.throws(() => RE2Set.compileAsync([new ArrayBuffer(3)]), TypeError)
+  })
+
+  test('rejects native setup failures through the returned promise', async () => {
+    const compilation = binding.set_compile_async([new ArrayBuffer(3)])
+    assert.ok(compilation instanceof Promise)
+    await assert.rejects(compilation, TypeError)
+  })
+
+  test('compiles and reuses sets inside a Worker environment', async () => {
+    const worker = new Worker(new URL('./fixtures/compile-worker.js', import.meta.url))
+    assert.equal(await waitForCompileWorker(worker), 'ok')
+  })
+
+  test('shares cache and in-flight dedupe across Worker environments', { timeout: 15_000 }, async () => {
+    const workerCount = 4
+    const barrier = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT))
+    const patterns = Array.from({ length: 2_000 }, (_, index) => `^cross-thread-dedupe-${index}$`)
+    const before = compileStats()
+    const workers = Array.from(
+      { length: workerCount },
+      () =>
+        new Worker(new URL('./fixtures/compile-worker.js', import.meta.url), {
+          workerData: {
+            batchSize: 128,
+            barrier: barrier.buffer,
+            patterns,
+            input: 'cross-thread-dedupe-0',
+            expected: [0],
+          },
+        })
+    )
+    const results = workers.map(waitForCompileWorker)
+
+    try {
+      await withTimeout(
+        Promise.race([
+          waitFor(
+            () => Atomics.load(barrier, 0) === workerCount,
+            10_000,
+            'Workers did not reach the compile barrier'
+          ),
+          Promise.all(results).then(() => {
+            throw new Error('Workers exited before reaching the compile barrier')
+          }),
+        ]),
+        10_000,
+        'Workers did not reach the compile barrier'
+      )
+      Atomics.store(barrier, 1, 1)
+      Atomics.notify(barrier, 1)
+
+      assert.deepEqual(await Promise.all(results), Array(workerCount).fill('ok'))
+      const after = compileStats()
+      assert.equal(after.compilations, before.compilations + 1n)
+      assert.ok(
+        after.cacheHits + after.deduplications >=
+          before.cacheHits + before.deduplications + BigInt(workerCount * 2 - 1)
+      )
+
+      const reused = await RE2Set.compileAsync(patterns)
+      const afterReuse = compileStats()
+      assert.equal(afterReuse.compilations, after.compilations)
+      assert.equal(afterReuse.cacheHits, after.cacheHits + 1n)
+      assert.deepEqual(reused.test(Buffer.from('cross-thread-dedupe-0')), [0])
+    } finally {
+      Atomics.store(barrier, 1, 1)
+      Atomics.notify(barrier, 1)
+      await Promise.all(workers.map(worker => worker.terminate().catch(() => {})))
+    }
+  })
+
+  test('survives Worker termination with compilation in flight', { timeout: 30_000 }, async () => {
+    for (let iteration = 0; iteration < 3; iteration += 1) {
+      const patterns = Array.from(
+        { length: 30_000 },
+        (_, index) => `^terminate-worker-${iteration}-${index}$`
+      )
+      const before = compileStats()
+      const worker = new Worker(
+        new URL('./fixtures/terminate-compile-worker.js', import.meta.url),
+        { workerData: iteration }
+      )
+      await new Promise((resolve, reject) => {
+        worker.once('message', resolve)
+        worker.once('error', reject)
+      })
+      await waitFor(
+        () => compileStats().inFlight > before.inFlight,
+        5_000,
+        'Worker compilation never entered the native in-flight registry'
+      )
+      assert.equal(await worker.terminate(), 1)
+
+      const expressions = await withTimeout(
+        RE2Set.compileAsync(patterns),
+        10_000,
+        'Compilation did not recover after Worker termination'
+      )
+      assert.deepEqual(expressions.test(Buffer.from(`terminate-worker-${iteration}-0`)), [0])
+    }
+  })
+
+  test('shares the persistent batch pool across concurrent Workers', async t => {
+    if (binding.batch_parallelism(128, 128 * 16_384) < 2) {
+      t.skip('parallel matching is only enabled in the Linux prebuild')
+      return
+    }
+
+    const workerCount = Math.min(4, binding.batch_parallelism(128, 128 * 16_384))
+    const barrierBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2)
+    const barrier = new Int32Array(barrierBuffer)
+    const workers = Array.from(
+      { length: workerCount },
+      () =>
+        new Worker(new URL('./fixtures/batch-worker.js', import.meta.url), {
+          workerData: { barrier: barrierBuffer },
+        })
+    )
+
+    try {
+      await waitFor(
+        () => Atomics.load(barrier, 0) === workerCount,
+        10_000,
+        'Batch workers did not reach the start barrier'
+      )
+      Atomics.store(barrier, 1, 1)
+      Atomics.notify(barrier, 1, workerCount)
+      assert.deepEqual(
+        await Promise.all(workers.map(waitForCompileWorker)),
+        Array(workerCount).fill('ok')
+      )
+
+      const input = Buffer.alloc(16_384, 0x61)
+      assert.ok(
+        new RE2('z$').testMany(Array(128).fill(input)).every(result => !result),
+        'Worker cleanup must not tear down the pool while the main environment is active'
+      )
+    } finally {
+      Atomics.store(barrier, 1, 1)
+      Atomics.notify(barrier, 1)
+      await Promise.all(workers.map(worker => worker.terminate().catch(() => {})))
+    }
+  })
 })
 
-test('supports synchronous CommonJS loading', () => {
+test('supports CommonJS loading and async compilation', async () => {
   const require = createRequire(import.meta.url)
   const commonjs = require('@nxtedition/re2')
 
   assert.equal(new commonjs.RE2('foo').test(Buffer.from('foo')), true)
+  assert.deepEqual(new commonjs.RE2('foo').testMany([Buffer.from('foo'), Buffer.from('bar')]), [
+    true,
+    false,
+  ])
+
+  const set = await commonjs.RE2Set.compileAsync(['foo'])
+  assert.deepEqual(set.test(Buffer.from('foo')), [0])
+  assert.deepEqual(set.testMany([Buffer.from('foo'), Buffer.from('bar')]), [[0], []])
+})
+
+test('can reload the native addon in one environment', () => {
+  const bindingPath = nodeGypBuild.path(import.meta.dirname)
+  const child = spawnSync(
+    process.execPath,
+    [
+      '--eval',
+      `
+        const bindingPath = ${JSON.stringify(bindingPath)}
+        const first = require(bindingPath)
+        const firstContext = first.regex_init('z$')
+        first.regex_test_many(firstContext, Array(128).fill(Buffer.alloc(16_384, 0x61)))
+        delete require.cache[require.resolve(bindingPath)]
+        const second = require(bindingPath)
+        const secondContext = second.regex_init('z$')
+        second.regex_test_many(secondContext, Array(128).fill(Buffer.alloc(16_384, 0x61)))
+      `,
+    ],
+    { encoding: 'utf8' }
+  )
+
+  assert.equal(child.signal, null)
+  assert.equal(child.status, 0, child.stderr)
+  assert.equal(child.stderr, '')
 })
 
 test('native addon has no unresolved vendored symbols', {

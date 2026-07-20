@@ -3,22 +3,22 @@
   "version": "1.0.13",
   "description": "Fast RE2 partial matching for Node.js",
   "type": "module",
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./index.d.ts",
-      "import": "./index.js",
-      "require": "./index.js",
-      "default": "./index.js"
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js",
+      "require": "./lib/index.js",
+      "default": "./lib/index.js"
     }
   },
   "files": [
+    "benchmark.js",
     "binding.cc",
     "binding.gyp",
-    "binding.js",
-    "index.d.ts",
-    "index.js",
+    "lib",
+    "native",
     "prebuilds",
     "THIRD_PARTY.md",
     "vendor/abseil-cpp/absl",
@@ -66,15 +66,21 @@
   "devDependencies": {
     "@types/node": "^26.1.1",
     "prebuildify": "^6.0.1",
+    "rimraf": "^6.1.3",
     "typescript": "^7.0.2"
   },
   "scripts": {
+    "benchmark": "npm run build:ts --silent && node benchmark.js",
+    "benchmark:prebuild": "npm run build:ts --silent && PREBUILDS_ONLY=1 node benchmark.js",
     "install": "node-gyp-build",
-    "build": "node-gyp rebuild --jobs=max",
+    "build": "npm run build:ts && npm run build:native",
+    "build:native": "node-gyp rebuild --jobs=max",
+    "build:ts": "rimraf lib && tsc -p tsconfig.build.json",
     "pretest": "npm run build",
+    "prepare": "npm run build:ts",
     "test": "node --test && npm run test:types",
-    "test:prebuild": "PREBUILDS_ONLY=1 node --test && npm run test:types",
-    "test:types": "tsc --noEmit",
+    "test:prebuild": "npm run build:ts && PREBUILDS_ONLY=1 node --test && npm run test:types",
+    "test:types": "tsc -p type-tests/tsconfig.json",
     "verify:prebuilds": "node scripts/verify-prebuilds.mjs",
     "rebuild": "npm_config_build_from_source=true node-gyp-build",
     "release": "./release.sh"

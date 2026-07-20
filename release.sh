@@ -3,30 +3,38 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+BRANCH=$(git branch --show-current)
+if [ "$BRANCH" != main ]; then
+  echo "Releases must be run from main (current branch: ${BRANCH:-detached HEAD})." >&2
+  exit 1
+fi
+
 if ! npm whoami --registry https://registry.npmjs.org > /dev/null 2>&1; then
-  echo "Not logged in to npm; run 'npm login' first." >&2
+  echo "Not logged in to npm, run 'npm login' first." >&2
   exit 1
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
-  echo "Working tree is not clean; commit or stash changes first." >&2
+  echo "Working tree is not clean, commit or stash changes first." >&2
   exit 1
 fi
 
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
+echo "Fetching origin..."
 git fetch origin "$BRANCH"
 
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "origin/$BRANCH")
 BASE=$(git merge-base HEAD "origin/$BRANCH")
 
-if [ "$LOCAL" = "$REMOTE" ] || [ "$REMOTE" = "$BASE" ]; then
-  :
+if [ "$LOCAL" = "$REMOTE" ]; then
+  : # up to date
 elif [ "$LOCAL" = "$BASE" ]; then
-  echo "Branch '$BRANCH' is behind origin; pull first." >&2
+  echo "Branch '$BRANCH' is behind origin, pull the latest changes first." >&2
   exit 1
+elif [ "$REMOTE" = "$BASE" ]; then
+  : # local is ahead, fine to push
 else
-  echo "Branch '$BRANCH' has diverged from origin; reconcile first." >&2
+  echo "Branch '$BRANCH' has diverged from origin, reconcile before releasing." >&2
   exit 1
 fi
 
@@ -41,33 +49,49 @@ if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
   exit 1
 fi
 
-rm -rf prebuilds
+# Public artifacts must not inherit local compiler flags or gyp overrides.
+# Linux is isolated by Docker; the Darwin helper sanitizes the remaining
+# compiler and prebuildify environment at its build boundary.
+export NODE_RE2_MARCH=
+unset CFLAGS CPPFLAGS CXXFLAGS LDFLAGS GYP_DEFINES
 
 echo "Building linux-x64 prebuild (Docker)..."
 ./build.sh
 
 echo "Building darwin-arm64 prebuild (Node $NODE_TARGET)..."
-JOBS=${JOBS:-8} npx prebuildify \
-  -t "$NODE_TARGET" \
-  --napi \
-  --strip \
-  --arch arm64
+JOBS=${JOBS:-8} ./scripts/build-darwin-prebuild.sh "$NODE_TARGET"
 
-npm run test:prebuild
+echo "Building TypeScript package outputs..."
+npm run build:ts --silent
+
+echo "Checking release prebuild manifest..."
 npm run verify:prebuilds
 
-read -r -p "Version bump (patch/minor/major): " BUMP
-case "$BUMP" in
-  patch | minor | major) ;;
-  *)
-    echo "Invalid bump: '$BUMP' (expected patch, minor, or major)." >&2
-    exit 1
-    ;;
-esac
+BUMP=${1:-}
+if [ -z "$BUMP" ]; then
+  read -r -p "Version bump (patch/minor/major or explicit version): " BUMP
+fi
+if [[ "$BUMP" != patch && "$BUMP" != minor && "$BUMP" != major && \
+  ! "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid version: '$BUMP' (expected patch, minor, major or an explicit version like 1.2.3)." >&2
+  exit 1
+fi
 
-npm version "$BUMP"
-npm publish --registry https://registry.npmjs.org
-git push
-git push --tags
+npm version "$BUMP" --git-tag-version=true --tag-version-prefix=v
+VERSION=$(node -p "require('./package.json').version")
+TAG="v$VERSION"
+TAG_COMMIT=$(git rev-parse --verify "$TAG^{}" 2> /dev/null || true)
+HEAD_COMMIT=$(git rev-parse HEAD)
+if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+  echo "npm version did not create the expected tag '$TAG' at HEAD." >&2
+  exit 1
+fi
 
-echo "Published $(node -p "require('./package.json').version")."
+npm publish \
+  --access public \
+  --dry-run=false \
+  --tag latest \
+  --registry https://registry.npmjs.org
+git push --atomic origin "HEAD:refs/heads/$BRANCH" "refs/tags/$TAG:refs/tags/$TAG"
+
+echo "Published $VERSION."
