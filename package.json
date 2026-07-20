@@ -71,6 +71,7 @@
   },
   "scripts": {
     "benchmark": "node benchmark.js",
+    "benchmark:prebuild": "PREBUILDS_ONLY=1 node benchmark.js",
     "install": "node-gyp-build",
     "build": "node-gyp rebuild --jobs=max",
     "pretest": "npm run build",

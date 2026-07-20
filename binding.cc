@@ -20,13 +20,10 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 namespace {
 
@@ -312,28 +309,51 @@ bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* tex
 
 template <typename Function>
 void ParallelFor(size_t size, Function&& function) {
-#ifdef _OPENMP
+#ifdef NODE_RE2_PARALLEL
   constexpr size_t kInputsPerThread = 64;
-  constexpr int kMaxThreads = 8;
-  const int thread_count = std::min(
-      {omp_get_max_threads(), kMaxThreads, static_cast<int>((size + kInputsPerThread - 1) / kInputsPerThread)});
+  constexpr size_t kMaxThreads = 8;
+  constexpr size_t kChunkSize = 8;
+  const size_t hardware_threads = std::max<size_t>(std::thread::hardware_concurrency(), 1);
+  const size_t thread_count =
+      std::min({hardware_threads, kMaxThreads, (size + kInputsPerThread - 1) / kInputsPerThread});
   if (thread_count > 1) {
+    std::atomic<size_t> next{0};
     std::atomic<bool> stopped{false};
     std::mutex error_mutex;
     std::exception_ptr error;
-#pragma omp parallel for schedule(dynamic, 8) num_threads(thread_count)
-    for (int64_t index = 0; index < static_cast<int64_t>(size); ++index) {
-      if (!stopped.load(std::memory_order_relaxed)) {
-        try {
-          function(static_cast<size_t>(index));
-        } catch (...) {
-          stopped.store(true, std::memory_order_relaxed);
-          std::lock_guard lock(error_mutex);
-          if (error == nullptr) {
-            error = std::current_exception();
+    const auto run = [&] {
+      try {
+        while (!stopped.load(std::memory_order_relaxed)) {
+          const size_t begin = next.fetch_add(kChunkSize, std::memory_order_relaxed);
+          if (begin >= size) {
+            return;
+          }
+          const size_t end = std::min(begin + kChunkSize, size);
+          for (size_t index = begin; index < end; ++index) {
+            function(index);
           }
         }
+      } catch (...) {
+        stopped.store(true, std::memory_order_relaxed);
+        std::lock_guard lock(error_mutex);
+        if (error == nullptr) {
+          error = std::current_exception();
+        }
       }
+    };
+
+    {
+      std::vector<std::jthread> workers;
+      workers.reserve(thread_count - 1);
+      try {
+        for (size_t index = 1; index < thread_count; ++index) {
+          workers.emplace_back(run);
+        }
+      } catch (...) {
+        stopped.store(true, std::memory_order_relaxed);
+        throw;
+      }
+      run();
     }
     if (error != nullptr) {
       std::rethrow_exception(error);

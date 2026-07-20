@@ -17,7 +17,7 @@ const asyncExpressions = await RE2Set.compileAsync(['foo', 'bar'])
 asyncExpressions.test(Buffer.from('foo')) // [0]
 ```
 
-Patterns may be strings, Buffers, TypedArrays, or DataViews. Input must be a Buffer, TypedArray, or DataView. SharedArrayBuffer-backed views are supported. Both APIs operate on bytes; optional `byteOffset` and `byteLength` values select the input range. Negative values clamp to zero, values past the view clamp to its bounds, and fractional values are truncated. `testMany()` accepts an array of binary inputs. Linux builds use up to eight OpenMP threads for larger batches; other platforms match the batch sequentially.
+Patterns may be strings, Buffers, TypedArrays, or DataViews. Input must be a Buffer, TypedArray, or DataView. SharedArrayBuffer-backed views are supported. Both APIs operate on bytes; optional `byteOffset` and `byteLength` values select the input range. Negative values clamp to zero, values past the view clamp to its bounds, and fractional values are truncated. `testMany()` accepts an array of binary inputs. The published Linux x64 prebuild uses up to eight native threads for larger batches; source builds and other platforms match the batch sequentially.
 
 Invalid RE2 syntax throws during synchronous construction and rejects `RE2Set.compileAsync()`. The asynchronous API snapshots pattern bytes before returning, compiles on the Node.js worker pool, and resolves to a normal `RE2Set`.
 
@@ -25,7 +25,7 @@ Async compilations are cached by the complete ordered pattern bytes. Concurrent 
 
 ## Benchmark
 
-Run `npm run benchmark` to compare scalar matching with `testMany()` and measure cold, cached, and deduplicated `compileAsync()` calls. Batch size, input bytes, iterations, set size, and warmups can be configured with command-line options; run `node benchmark.js --help` for details.
+Run `npm run benchmark` to compare scalar matching with `testMany()` and measure cold, cached, and deduplicated `compileAsync()` calls. Use `npm run benchmark:prebuild` to force the packaged prebuild. Batch size, input bytes, iterations, set size, and warmups can be configured with command-line options; run `node benchmark.js --help` for details.
 
 ## Prebuilds
 

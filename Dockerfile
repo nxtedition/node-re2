@@ -16,7 +16,7 @@ COPY . .
 ARG JOBS=8
 # Match the deployment RocksDB build: the shipped x64 binary targets Zen 3,
 # enabling AVX2 while local source builds remain portable by leaving this unset.
-RUN NODE_RE2_MARCH=znver3 JOBS=$JOBS npx prebuildify \
+RUN NODE_RE2_MARCH=znver3 NODE_RE2_PARALLEL=1 JOBS=$JOBS npx prebuildify \
   -t "$(node -p process.versions.node)" \
   --napi \
   --strip \
