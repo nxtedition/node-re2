@@ -53,7 +53,7 @@ export class RE2 {
   }
 
   /**
-   * Matches a batch of binary inputs in parallel.
+   * Matches a batch of binary inputs.
    *
    * @param {readonly NodeJS.ArrayBufferView[]} inputs
    * @returns {boolean[]}
@@ -122,7 +122,7 @@ export class RE2Set {
   }
 
   /**
-   * Matches a batch of binary inputs in parallel.
+   * Matches a batch of binary inputs.
    *
    * @param {readonly NodeJS.ArrayBufferView[]} inputs
    * @returns {number[][]}

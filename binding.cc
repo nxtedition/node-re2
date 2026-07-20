@@ -12,9 +12,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <exception>
-#include <functional>
 #include <limits>
 #include <list>
 #include <memory>
@@ -22,11 +20,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
-#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace {
 
@@ -310,153 +310,40 @@ bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* tex
   return true;
 }
 
-constexpr size_t kParallelMaxThreads = 8;
-
-class ParallelExecutor {
- public:
-  ParallelExecutor() {
-    const size_t hardware_threads = std::max<size_t>(std::thread::hardware_concurrency(), 1);
-    const size_t worker_count = std::min(hardware_threads - 1, kParallelMaxThreads - 1);
-    workers_.reserve(worker_count);
-    try {
-      for (size_t index = 0; index < worker_count; ++index) {
-        workers_.emplace_back([this] { Run(); });
-      }
-    } catch (...) {
-      {
-        std::lock_guard lock(mutex_);
-        stopping_ = true;
-      }
-      ready_.notify_all();
-      for (std::thread& worker : workers_) {
-        worker.join();
-      }
-      throw;
-    }
-  }
-
-  ~ParallelExecutor() {
-    {
-      std::lock_guard lock(mutex_);
-      stopping_ = true;
-    }
-    ready_.notify_all();
-    for (std::thread& worker : workers_) {
-      worker.join();
-    }
-  }
-
-  bool Submit(std::function<void()> task) noexcept {
-    try {
-      {
-        std::lock_guard lock(mutex_);
-        tasks_.push_back(std::move(task));
-      }
-      ready_.notify_one();
-      return true;
-    } catch (...) {
-      return false;
-    }
-  }
-
- private:
-  void Run() {
-    while (true) {
-      std::function<void()> task;
-      {
-        std::unique_lock lock(mutex_);
-        ready_.wait(lock, [this] { return stopping_ || !tasks_.empty(); });
-        if (stopping_ && tasks_.empty()) {
-          return;
-        }
-        task = std::move(tasks_.front());
-        tasks_.pop_front();
-      }
-      task();
-    }
-  }
-
-  std::mutex mutex_;
-  std::condition_variable ready_;
-  std::deque<std::function<void()>> tasks_;
-  std::vector<std::thread> workers_;
-  bool stopping_ = false;
-};
-
-ParallelExecutor& GetParallelExecutor() {
-  static ParallelExecutor executor;
-  return executor;
-}
-
 template <typename Function>
 void ParallelFor(size_t size, Function&& function) {
+#ifdef _OPENMP
   constexpr size_t kInputsPerThread = 64;
-  constexpr size_t kChunkSize = 8;
-  const size_t hardware_threads = std::max<size_t>(std::thread::hardware_concurrency(), 1);
-  const size_t thread_count =
-      std::min({hardware_threads, kParallelMaxThreads, (size + kInputsPerThread - 1) / kInputsPerThread});
-  if (thread_count <= 1) {
-    for (size_t index = 0; index < size; ++index) {
-      function(index);
+  constexpr int kMaxThreads = 8;
+  const int thread_count = std::min(
+      {omp_get_max_threads(), kMaxThreads, static_cast<int>((size + kInputsPerThread - 1) / kInputsPerThread)});
+  if (thread_count > 1) {
+    std::atomic<bool> stopped{false};
+    std::mutex error_mutex;
+    std::exception_ptr error;
+#pragma omp parallel for schedule(dynamic, 8) num_threads(thread_count)
+    for (int64_t index = 0; index < static_cast<int64_t>(size); ++index) {
+      if (!stopped.load(std::memory_order_relaxed)) {
+        try {
+          function(static_cast<size_t>(index));
+        } catch (...) {
+          stopped.store(true, std::memory_order_relaxed);
+          std::lock_guard lock(error_mutex);
+          if (error == nullptr) {
+            error = std::current_exception();
+          }
+        }
+      }
+    }
+    if (error != nullptr) {
+      std::rethrow_exception(error);
     }
     return;
   }
+#endif
 
-  struct State {
-    std::atomic<size_t> next{0};
-    std::atomic<size_t> remaining{1};
-    std::atomic<bool> stopped{false};
-    std::mutex mutex;
-    std::condition_variable completed;
-    std::exception_ptr error;
-  };
-
-  ParallelExecutor& executor = GetParallelExecutor();
-  auto state = std::make_shared<State>();
-  auto shared_function = std::make_shared<std::decay_t<Function>>(std::forward<Function>(function));
-  const auto run = [state, shared_function, size] {
-    try {
-      while (!state->stopped.load(std::memory_order_relaxed)) {
-        const size_t begin = state->next.fetch_add(kChunkSize, std::memory_order_relaxed);
-        if (begin >= size) {
-          break;
-        }
-        const size_t end = std::min(begin + kChunkSize, size);
-        for (size_t index = begin; index < end; ++index) {
-          (*shared_function)(index);
-        }
-      }
-    } catch (...) {
-      state->stopped.store(true, std::memory_order_relaxed);
-      std::lock_guard lock(state->mutex);
-      if (state->error == nullptr) {
-        state->error = std::current_exception();
-      }
-    }
-    if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-      state->completed.notify_one();
-    }
-  };
-
-  for (size_t index = 1; index < thread_count; ++index) {
-    state->remaining.fetch_add(1, std::memory_order_relaxed);
-    bool submitted = false;
-    try {
-      submitted = executor.Submit(run);
-    } catch (...) {
-      submitted = false;
-    }
-    if (!submitted) {
-      state->remaining.fetch_sub(1, std::memory_order_relaxed);
-      break;
-    }
-  }
-
-  run();
-  std::unique_lock lock(state->mutex);
-  state->completed.wait(lock, [&state] { return state->remaining.load(std::memory_order_acquire) == 0; });
-  if (state->error != nullptr) {
-    std::rethrow_exception(state->error);
+  for (size_t index = 0; index < size; ++index) {
+    function(index);
   }
 }
 
@@ -762,16 +649,27 @@ void SetCompileExecute(napi_env, void* data) {
   }
 }
 
-void RejectDeferred(napi_env env, napi_deferred deferred, const std::string& message) {
+bool TakePendingException(napi_env env, napi_value* exception) {
+  bool pending = false;
+  return napi_is_exception_pending(env, &pending) == napi_ok && pending &&
+         napi_get_and_clear_last_exception(env, exception) == napi_ok;
+}
+
+void RejectDeferred(napi_env env, napi_deferred deferred, std::string_view message) {
+  napi_value reason;
+  if (TakePendingException(env, &reason)) {
+    (void)napi_reject_deferred(env, deferred, reason);
+    return;
+  }
+
   napi_value message_value;
-  if (napi_create_string_utf8(env, message.c_str(), message.size(), &message_value) != napi_ok) {
-    return;
+  if (napi_create_string_utf8(env, message.data(), message.size(), &message_value) != napi_ok ||
+      napi_create_error(env, nullptr, message_value, &reason) != napi_ok) {
+    if (!TakePendingException(env, &reason) && napi_get_undefined(env, &reason) != napi_ok) {
+      return;
+    }
   }
-  napi_value error;
-  if (napi_create_error(env, nullptr, message_value, &error) != napi_ok) {
-    return;
-  }
-  (void)napi_reject_deferred(env, deferred, error);
+  (void)napi_reject_deferred(env, deferred, reason);
 }
 
 void SetCompileComplete(napi_env env, napi_status status, void* data) {
@@ -800,7 +698,9 @@ void SetCompileComplete(napi_env env, napi_status status, void* data) {
     RejectDeferred(env, work->deferred, "Failed to create native RE2Set context");
     return;
   }
-  (void)napi_resolve_deferred(env, work->deferred, context);
+  if (napi_resolve_deferred(env, work->deferred, context) != napi_ok) {
+    RejectDeferred(env, work->deferred, "Failed to resolve RE2Set compilation");
+  }
 }
 
 napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
@@ -815,6 +715,7 @@ napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
       return nullptr;
     }
     work->cache_key = SetCompileCacheKey(work->patterns);
+    SharedSet cached_set = FindCachedSet(work->cache_key);
 
     napi_value promise;
     if (!Check(env, napi_create_promise(env, &work->deferred, &promise),
@@ -822,35 +723,52 @@ napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
       return nullptr;
     }
 
-    if (SharedSet set = FindCachedSet(work->cache_key)) {
-      napi_value context;
-      if (!CreateSetExternal(env, std::move(set), &context)) {
-        return nullptr;
+    try {
+      if (cached_set != nullptr) {
+        napi_value context;
+        if (CreateSetExternalRaw(env, std::move(cached_set), &context) != napi_ok) {
+          RejectDeferred(env, work->deferred, "Failed to create native RE2Set context");
+          return promise;
+        }
+        if (napi_resolve_deferred(env, work->deferred, context) != napi_ok) {
+          RejectDeferred(env, work->deferred, "Failed to resolve cached RE2Set compilation");
+        }
+        return promise;
       }
-      if (!Check(env, napi_resolve_deferred(env, work->deferred, context),
-                 "Failed to resolve cached RE2Set compilation")) {
-        return nullptr;
+
+      napi_value resource_name;
+      if (napi_create_string_utf8(env, "@nxtedition/re2:compile-set", NAPI_AUTO_LENGTH, &resource_name) != napi_ok) {
+        RejectDeferred(env, work->deferred, "Failed to create RE2Set async resource name");
+        return promise;
       }
+      if (napi_create_async_work(env, nullptr, resource_name, SetCompileExecute, SetCompileComplete, work.get(),
+                                 &work->work) != napi_ok) {
+        RejectDeferred(env, work->deferred, "Failed to create RE2Set async work");
+        return promise;
+      }
+
+      if (napi_queue_async_work(env, work->work) != napi_ok) {
+        (void)napi_delete_async_work(env, work->work);
+        work->work = nullptr;
+        RejectDeferred(env, work->deferred, "Failed to queue RE2Set async work");
+        return promise;
+      }
+
+      work.release();
+      return promise;
+    } catch (const std::exception& error) {
+      if (work->work != nullptr) {
+        (void)napi_delete_async_work(env, work->work);
+      }
+      RejectDeferred(env, work->deferred, error.what());
+      return promise;
+    } catch (...) {
+      if (work->work != nullptr) {
+        (void)napi_delete_async_work(env, work->work);
+      }
+      RejectDeferred(env, work->deferred, "Failed to prepare RE2Set compilation");
       return promise;
     }
-
-    napi_value resource_name;
-    if (!Check(env, napi_create_string_utf8(env, "@nxtedition/re2:compile-set", NAPI_AUTO_LENGTH, &resource_name),
-               "Failed to create RE2Set async resource name") ||
-        !Check(env,
-               napi_create_async_work(env, nullptr, resource_name, SetCompileExecute, SetCompileComplete, work.get(),
-                                      &work->work),
-               "Failed to create RE2Set async work")) {
-      return nullptr;
-    }
-
-    if (!Check(env, napi_queue_async_work(env, work->work), "Failed to queue RE2Set async work")) {
-      (void)napi_delete_async_work(env, work->work);
-      return nullptr;
-    }
-
-    work.release();
-    return promise;
   } catch (const std::exception& error) {
     napi_throw_error(env, nullptr, error.what());
     return nullptr;

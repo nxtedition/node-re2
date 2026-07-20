@@ -151,8 +151,12 @@
           "cflags": [
             "-pthread"
           ],
+          "cflags_cc": [
+            "-fopenmp"
+          ],
           "ldflags": [
-            "-pthread"
+            "-pthread",
+            "-fopenmp"
           ],
           "conditions": [
             ["target_arch==\"x64\" and node_re2_march!=\"\"", {

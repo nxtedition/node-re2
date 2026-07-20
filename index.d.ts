@@ -7,7 +7,7 @@ export class RE2 {
    */
   test(buffer: BinaryView, byteOffset?: number, byteLength?: number): boolean;
   /**
-   * Matches a batch of binary inputs in parallel.
+   * Matches a batch of binary inputs.
    */
   testMany(inputs: readonly BinaryView[]): boolean[];
 }
@@ -25,7 +25,7 @@ export class RE2Set {
    */
   test(buffer: BinaryView, byteOffset?: number, byteLength?: number): number[];
   /**
-   * Matches a batch of binary inputs in parallel.
+   * Matches a batch of binary inputs.
    */
   testMany(inputs: readonly BinaryView[]): number[][];
 }

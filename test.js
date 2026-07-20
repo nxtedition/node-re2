@@ -87,7 +87,7 @@ describe('RE2', () => {
     assert.throws(() => new RE2('foo').test('foo'), TypeError)
   })
 
-  test('matches batches with bounded native parallel dispatch', () => {
+  test('matches batches', () => {
     const expression = new RE2('^match-[0-9]+$')
     const inputs = Array.from({ length: 512 }, (_, index) =>
       Buffer.from(index % 3 === 0 ? `match-${index}` : `miss-${index}`)
