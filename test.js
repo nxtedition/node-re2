@@ -257,6 +257,12 @@ describe('RE2Set', () => {
     assert.throws(() => RE2Set.compileAsync([new ArrayBuffer(3)]), TypeError)
   })
 
+  test('rejects native setup failures through the returned promise', async () => {
+    const compilation = binding.set_compile_async([new ArrayBuffer(3)])
+    assert.ok(compilation instanceof Promise)
+    await assert.rejects(compilation, TypeError)
+  })
+
   test('compiles and reuses sets inside a Worker environment', async () => {
     const worker = new Worker(new URL('./fixtures/compile-worker.js', import.meta.url))
     assert.equal(await waitForCompileWorker(worker), 'ok')

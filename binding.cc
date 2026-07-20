@@ -735,69 +735,67 @@ napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
     return nullptr;
   }
 
+  napi_deferred deferred;
+  napi_value promise;
+  if (!Check(env, napi_create_promise(env, &deferred, &promise), "Failed to create RE2Set compilation promise")) {
+    return nullptr;
+  }
+
+  std::unique_ptr<SetCompileWork> work;
   try {
-    auto work = std::make_unique<SetCompileWork>();
+    work = std::make_unique<SetCompileWork>();
+    work->deferred = deferred;
     if (!GetPatterns(env, arguments[0], &work->patterns)) {
-      return nullptr;
+      RejectDeferred(env, deferred, "Failed to read RE2Set patterns");
+      return promise;
     }
     work->cache_key = SetCompileCacheKey(work->patterns);
     SharedSet cached_set = FindCachedSet(work->cache_key);
 
-    napi_value promise;
-    if (!Check(env, napi_create_promise(env, &work->deferred, &promise),
-               "Failed to create RE2Set compilation promise")) {
-      return nullptr;
-    }
-
-    try {
-      if (cached_set != nullptr) {
-        napi_value context;
-        if (CreateSetExternalRaw(env, std::move(cached_set), &context) != napi_ok) {
-          RejectDeferred(env, work->deferred, "Failed to create native RE2Set context");
-          return promise;
-        }
-        if (napi_resolve_deferred(env, work->deferred, context) != napi_ok) {
-          RejectDeferred(env, work->deferred, "Failed to resolve cached RE2Set compilation");
-        }
+    if (cached_set != nullptr) {
+      napi_value context;
+      if (CreateSetExternalRaw(env, std::move(cached_set), &context) != napi_ok) {
+        RejectDeferred(env, deferred, "Failed to create native RE2Set context");
         return promise;
       }
-
-      napi_value resource_name;
-      if (napi_create_string_utf8(env, "@nxtedition/re2:compile-set", NAPI_AUTO_LENGTH, &resource_name) != napi_ok) {
-        RejectDeferred(env, work->deferred, "Failed to create RE2Set async resource name");
-        return promise;
+      if (napi_resolve_deferred(env, deferred, context) != napi_ok) {
+        RejectDeferred(env, deferred, "Failed to resolve cached RE2Set compilation");
       }
-      if (napi_create_async_work(env, nullptr, resource_name, SetCompileExecute, SetCompileComplete, work.get(),
-                                 &work->work) != napi_ok) {
-        RejectDeferred(env, work->deferred, "Failed to create RE2Set async work");
-        return promise;
-      }
-
-      if (napi_queue_async_work(env, work->work) != napi_ok) {
-        (void)napi_delete_async_work(env, work->work);
-        work->work = nullptr;
-        RejectDeferred(env, work->deferred, "Failed to queue RE2Set async work");
-        return promise;
-      }
-
-      work.release();
-      return promise;
-    } catch (const std::exception& error) {
-      if (work->work != nullptr) {
-        (void)napi_delete_async_work(env, work->work);
-      }
-      RejectDeferred(env, work->deferred, error.what());
-      return promise;
-    } catch (...) {
-      if (work->work != nullptr) {
-        (void)napi_delete_async_work(env, work->work);
-      }
-      RejectDeferred(env, work->deferred, "Failed to prepare RE2Set compilation");
       return promise;
     }
+
+    napi_value resource_name;
+    if (napi_create_string_utf8(env, "@nxtedition/re2:compile-set", NAPI_AUTO_LENGTH, &resource_name) != napi_ok) {
+      RejectDeferred(env, deferred, "Failed to create RE2Set async resource name");
+      return promise;
+    }
+    if (napi_create_async_work(env, nullptr, resource_name, SetCompileExecute, SetCompileComplete, work.get(),
+                               &work->work) != napi_ok) {
+      RejectDeferred(env, deferred, "Failed to create RE2Set async work");
+      return promise;
+    }
+
+    if (napi_queue_async_work(env, work->work) != napi_ok) {
+      (void)napi_delete_async_work(env, work->work);
+      work->work = nullptr;
+      RejectDeferred(env, deferred, "Failed to queue RE2Set async work");
+      return promise;
+    }
+
+    work.release();
+    return promise;
   } catch (const std::exception& error) {
-    napi_throw_error(env, nullptr, error.what());
-    return nullptr;
+    if (work != nullptr && work->work != nullptr) {
+      (void)napi_delete_async_work(env, work->work);
+    }
+    RejectDeferred(env, deferred, error.what());
+    return promise;
+  } catch (...) {
+    if (work != nullptr && work->work != nullptr) {
+      (void)napi_delete_async_work(env, work->work);
+    }
+    RejectDeferred(env, deferred, "Failed to prepare RE2Set compilation");
+    return promise;
   }
 }
 
