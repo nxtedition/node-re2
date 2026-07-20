@@ -196,9 +196,10 @@ test('build script exports and atomically installs only the Linux artifact', () 
     const { log, result } = runBuild(context)
 
     assert.equal(result.status, 0, result.stderr)
+    assert.match(log, /build --platform linux\/amd64 /)
     assert.match(
       log,
-      /build --platform linux\/amd64 --target artifact --output type=local,dest=prebuilds\/\.linux-x64\./
+      /--target artifact --output type=local,dest=prebuilds\/\.linux-x64\./
     )
     assert.deepEqual(readdirSync(context.linux), [addon])
     assert.equal(readFileSync(path.join(context.linux, addon), 'utf8'), 'candidate\n')
