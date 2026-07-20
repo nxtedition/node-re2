@@ -3,6 +3,9 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
 
 const required = [
+  'lib/index.js',
+  'lib/index.d.ts',
+  'lib/binding.js',
   'prebuilds/linux-x64/@nxtedition+re2.glibc.node',
   'prebuilds/darwin-arm64/@nxtedition+re2.node',
 ]

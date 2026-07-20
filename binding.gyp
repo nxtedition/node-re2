@@ -7,6 +7,13 @@
       "target_name": "binding",
       "sources": [
         "binding.cc",
+        "native/addon-lifecycle.cc",
+        "native/batch-binding.cc",
+        "native/napi-utils.cc",
+        "native/regex-binding.cc",
+        "native/set-binding.cc",
+        "native/set-cache.cc",
+        "native/thread-pool.cc",
         "vendor/re2/re2/bitmap256.cc",
         "vendor/re2/re2/bitstate.cc",
         "vendor/re2/re2/compile.cc",
@@ -123,6 +130,13 @@
       "defines": [
         "NOMINMAX"
       ],
+      "configurations": {
+        "Release": {
+          "defines": [
+            "NDEBUG"
+          ]
+        }
+      },
       "include_dirs": [
         "vendor/re2",
         "vendor/abseil-cpp",
