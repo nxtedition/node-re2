@@ -1,4 +1,4 @@
-FROM node:26.5.0-bookworm
+FROM node:26.5.0-bookworm AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   build-essential \
@@ -27,3 +27,7 @@ RUN npm run build:ts && \
 # PREBUILDS_ONLY makes node-gyp-build ignore build/Release, proving that the
 # binary which will be embedded in the npm tarball is independently loadable.
 RUN npm run test:prebuild
+
+FROM scratch AS artifact
+
+COPY --from=build /node-re2/prebuilds/linux-x64/@nxtedition+re2.glibc.node /

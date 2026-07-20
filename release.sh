@@ -61,6 +61,9 @@ echo "Building linux-x64 prebuild (Docker)..."
 echo "Building darwin-arm64 prebuild (Node $NODE_TARGET)..."
 JOBS=${JOBS:-8} ./scripts/build-darwin-prebuild.sh "$NODE_TARGET"
 
+echo "Building TypeScript package outputs..."
+npm run build:ts --silent
+
 echo "Checking release prebuild manifest..."
 npm run verify:prebuilds
 

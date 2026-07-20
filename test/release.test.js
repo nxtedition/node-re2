@@ -20,7 +20,8 @@ test('release builds and validates prebuilds before versioning or publishing', (
   const release = readFileSync(new URL('../release.sh', import.meta.url), 'utf8')
   const linux = release.indexOf('./build.sh')
   const darwin = release.indexOf('./scripts/build-darwin-prebuild.sh', linux)
-  const verify = release.indexOf('npm run verify:prebuilds', darwin)
+  const typescript = release.indexOf('npm run build:ts --silent', darwin)
+  const verify = release.indexOf('npm run verify:prebuilds', typescript)
   const version = release.indexOf(
     'npm version "$BUMP" --git-tag-version=true --tag-version-prefix=v',
     verify
@@ -31,7 +32,8 @@ test('release builds and validates prebuilds before versioning or publishing', (
   assert.match(release, /\[ "\$BRANCH" != main \]/)
   assert.ok(linux >= 0)
   assert.ok(darwin > linux)
-  assert.ok(verify > darwin)
+  assert.ok(typescript > darwin)
+  assert.ok(verify > typescript)
   assert.ok(version > verify)
   assert.ok(publish > version)
   assert.ok(push > publish)
@@ -76,7 +78,7 @@ function withDarwinHelper(run) {
 }
 
 function runDarwinHelper(root) {
-  return spawnSync('/bin/bash', ['scripts/build-darwin-prebuild.sh', '26.5.0'], {
+  return spawnSync(process.env.BASH ?? 'bash', ['scripts/build-darwin-prebuild.sh', '26.5.0'], {
     cwd: root,
     env: { ...process.env, PATH: `${path.join(root, 'bin')}:${process.env.PATH}` },
     encoding: 'utf8',

@@ -34,7 +34,7 @@ Run `npm run benchmark` to compare scalar and single-threaded matching with the 
 
 Release tarballs include Node-API prebuilds for `darwin-arm64` and glibc `linux-x64`. The Linux binary is built in the Node 26 Bookworm image with `-march=znver3 -mtune=znver3`, enabling AVX2 and targeting Zen 3-compatible deployment CPUs. It is compatible with Bookworm and newer glibc systems, and is libc-tagged so it is never selected on musl. Other platforms fall back to a portable source build when install scripts are enabled; Linux x64 source builds can opt into the same tuning with `NODE_RE2_MARCH=znver3`.
 
-`./build.sh` builds and tests the Linux prebuild in Docker. From a clean, up-to-date `main` checkout on an arm64 Mac, `yarn release [patch|minor|major|x.y.z]` builds and tests the Linux and Darwin prebuilds before changing the version, verifies the npm tarball's exact native-artifact manifest, and only then versions, publishes, and pushes the release. The Darwin build is staged and rolled back to the prior artifact if its prebuild-only test fails.
+`./build.sh` builds and tests the Linux prebuild in Docker, validates its exact artifact manifest, and installs it transactionally. From a clean, up-to-date `main` checkout on an arm64 Mac, `yarn release [patch|minor|major|x.y.z]` builds and tests the Linux and Darwin prebuilds before changing the version, verifies the npm tarball's exact native-artifact manifest, and only then versions, publishes, and pushes the release. Both platform builds stage their candidate and restore the prior artifact if generation, validation, or installation fails.
 
 ## Development
 
