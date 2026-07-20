@@ -7,19 +7,25 @@ import { RE2, RE2Set } from '@nxtedition/re2'
 
 const expression = new RE2('foo')
 expression.test(Buffer.from('before foo after')) // true
+expression.testMany([Buffer.from('foo'), Buffer.from('bar')]) // [true, false]
 
 const expressions = new RE2Set(['foo', 'bar'])
 expressions.test(Buffer.from('bar')) // [1]
+expressions.testMany([Buffer.from('foo'), Buffer.from('bar')]) // [[0], [1]]
 
 const asyncExpressions = await RE2Set.compileAsync(['foo', 'bar'])
 asyncExpressions.test(Buffer.from('foo')) // [0]
 ```
 
-Patterns may be strings, Buffers, TypedArrays, or DataViews. Input must be a Buffer, TypedArray, or DataView. SharedArrayBuffer-backed views are supported. Both APIs operate on bytes; optional `byteOffset` and `byteLength` values select the input range. Negative values clamp to zero, values past the view clamp to its bounds, and fractional values are truncated.
+Patterns may be strings, Buffers, TypedArrays, or DataViews. Input must be a Buffer, TypedArray, or DataView. SharedArrayBuffer-backed views are supported. Both APIs operate on bytes; optional `byteOffset` and `byteLength` values select the input range. Negative values clamp to zero, values past the view clamp to its bounds, and fractional values are truncated. `testMany()` accepts an array of binary inputs and uses a bounded, reusable native worker pool for larger batches.
 
 Invalid RE2 syntax throws during synchronous construction and rejects `RE2Set.compileAsync()`. The asynchronous API snapshots pattern bytes before returning, compiles on the Node.js worker pool, and resolves to a normal `RE2Set`.
 
-Async compilations are cached by the complete ordered pattern bytes. Concurrent calls for the same pattern set share one in-flight compilation, and each Node.js environment retains the 16 most recently compiled sets. Failed compilations are not cached. `RE2Set#test()` returns every matching pattern index, or `[]` when nothing matches; index order is unspecified.
+Async compilations are cached by the complete ordered pattern bytes. Concurrent calls for the same pattern set share one in-flight compilation, and the native addon retains the 16 most recently compiled sets process-wide across Node.js Workers. Compiled sets use shared ownership so cache eviction and Worker teardown cannot invalidate another Worker's live set. Failed compilations are not cached. `RE2Set#test()` returns every matching pattern index, or `[]` when nothing matches; index order is unspecified.
+
+## Benchmark
+
+Run `npm run benchmark` to compare scalar matching with `testMany()` and measure cold, cached, and deduplicated `compileAsync()` calls. Batch size, input bytes, iterations, set size, and warmups can be configured with command-line options; run `node benchmark.js --help` for details.
 
 ## Prebuilds
 

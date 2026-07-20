@@ -5,8 +5,27 @@ import { describe, test } from 'node:test'
 import { Worker } from 'node:worker_threads'
 import { RE2, RE2Set } from '@nxtedition/re2'
 import nodeGypBuild from 'node-gyp-build'
+import binding from './binding.js'
 
 const toSortedIndices = indices => indices.toSorted((left, right) => left - right)
+const compileStats = () => binding.set_compile_cache_stats()
+
+function waitForCompileWorker(worker) {
+  return new Promise((resolve, reject) => {
+    let result
+    worker.once('message', value => {
+      result = value
+    })
+    worker.once('error', reject)
+    worker.once('exit', code => {
+      if (code === 0) {
+        resolve(result)
+      } else {
+        reject(new Error(`RE2Set worker exited with code ${code}`))
+      }
+    })
+  })
+}
 
 describe('RE2', () => {
   test('performs partial matches', () => {
@@ -66,6 +85,21 @@ describe('RE2', () => {
     )
     assert.throws(() => new RE2(new ArrayBuffer(3)), TypeError)
     assert.throws(() => new RE2('foo').test('foo'), TypeError)
+  })
+
+  test('matches batches with bounded native parallel dispatch', () => {
+    const expression = new RE2('^match-[0-9]+$')
+    const inputs = Array.from({ length: 512 }, (_, index) =>
+      Buffer.from(index % 3 === 0 ? `match-${index}` : `miss-${index}`)
+    )
+
+    assert.deepEqual(
+      expression.testMany(inputs),
+      inputs.map(input => expression.test(input))
+    )
+    assert.deepEqual(expression.testMany([]), [])
+    assert.throws(() => expression.testMany('match-1'), TypeError)
+    assert.throws(() => expression.testMany([Buffer.from('match-1'), 'match-2']), TypeError)
   })
 
   test('matches byte ranges and clamps them without 32-bit wrapping', () => {
@@ -140,6 +174,21 @@ describe('RE2Set', () => {
     assert.deepEqual(expressions.test(bytes, 2 ** 32, 1), [])
   })
 
+  test('matches batches with independent RE2Set result storage', () => {
+    const expressions = new RE2Set(['^foo-[0-9]+$', '[02468]$', '^bar'])
+    const inputs = Array.from({ length: 512 }, (_, index) =>
+      Buffer.from(index % 2 === 0 ? `foo-${index}` : `bar-${index}`)
+    )
+
+    assert.deepEqual(
+      expressions.testMany(inputs).map(toSortedIndices),
+      inputs.map(input => toSortedIndices(expressions.test(input)))
+    )
+    assert.deepEqual(expressions.testMany([]), [])
+    assert.throws(() => expressions.testMany('foo-1'), TypeError)
+    assert.throws(() => expressions.testMany([Buffer.from('foo-1'), 'bar-2']), TypeError)
+  })
+
   test('compiles asynchronously on the worker pool', async () => {
     const expressions = await RE2Set.compileAsync(['foo', 'o', 'bar'])
 
@@ -160,31 +209,47 @@ describe('RE2Set', () => {
 
   test('deduplicates in-flight compilations and caches completed sets', async () => {
     const patterns = ['^async-dedupe$', Buffer.from('cache')]
+    const before = compileStats()
     const first = RE2Set.compileAsync(patterns)
     const second = RE2Set.compileAsync(['^async-dedupe$', Buffer.from('cache')])
 
-    assert.strictEqual(second, first)
-    const expressions = await first
-    assert.strictEqual(await second, expressions)
-    assert.strictEqual(await RE2Set.compileAsync(patterns), expressions)
+    const [firstExpressions, secondExpressions] = await Promise.all([first, second])
+    assert.deepEqual(firstExpressions.test(Buffer.from('async-dedupe')), [0])
+    assert.deepEqual(secondExpressions.test(Buffer.from('cache')), [1])
+
+    const afterConcurrent = compileStats()
+    assert.equal(afterConcurrent.compilations, before.compilations + 1)
+    assert.ok(
+      afterConcurrent.cacheHits + afterConcurrent.deduplications >=
+        before.cacheHits + before.deduplications + 1
+    )
+
+    await RE2Set.compileAsync(patterns)
+    const afterCached = compileStats()
+    assert.equal(afterCached.compilations, afterConcurrent.compilations)
+    assert.equal(afterCached.cacheHits, afterConcurrent.cacheHits + 1)
   })
 
   test('bounds the completed compile cache', async () => {
-    const first = await RE2Set.compileAsync(['^async-eviction-0$'])
+    const retained = await RE2Set.compileAsync(['^async-eviction-0$'])
     for (let index = 1; index <= 16; index += 1) {
       await RE2Set.compileAsync([`^async-eviction-${index}$`])
     }
 
-    assert.notStrictEqual(await RE2Set.compileAsync(['^async-eviction-0$']), first)
+    const beforeRetry = compileStats()
+    await RE2Set.compileAsync(['^async-eviction-0$'])
+    assert.equal(compileStats().compilations, beforeRetry.compilations + 1)
+    assert.deepEqual(retained.test(Buffer.from('async-eviction-0')), [0])
   })
 
   test('does not cache failed compilations', async () => {
+    const before = compileStats()
     const first = RE2Set.compileAsync(['async-invalid', '('])
     await assert.rejects(first, Error)
 
     const second = RE2Set.compileAsync(['async-invalid', '('])
-    assert.notStrictEqual(second, first)
     await assert.rejects(second, Error)
+    assert.equal(compileStats().compilations, before.compilations + 2)
   })
 
   test('validates compileAsync input synchronously', () => {
@@ -194,23 +259,50 @@ describe('RE2Set', () => {
 
   test('compiles and reuses sets inside a Worker environment', async () => {
     const worker = new Worker(new URL('./fixtures/compile-worker.js', import.meta.url))
-    const result = await new Promise((resolve, reject) => {
-      worker.once('message', resolve)
-      worker.once('error', reject)
-      worker.once('exit', code => {
-        if (code !== 0) {
-          reject(new Error(`RE2Set worker exited with code ${code}`))
-        }
-      })
-    })
+    assert.equal(await waitForCompileWorker(worker), 'ok')
+  })
 
-    assert.equal(result, 'ok')
+  test('shares cache and in-flight dedupe across Worker environments', async () => {
+    const workerCount = 4
+    const barrier = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT))
+    const patterns = Array.from({ length: 2_000 }, (_, index) => `^cross-thread-dedupe-${index}$`)
+    const before = compileStats()
+    const workers = Array.from(
+      { length: workerCount },
+      () =>
+        new Worker(new URL('./fixtures/compile-worker.js', import.meta.url), {
+          workerData: {
+            batchSize: 128,
+            barrier: barrier.buffer,
+            patterns,
+            input: 'cross-thread-dedupe-0',
+            expected: [0],
+          },
+        })
+    )
+    const results = workers.map(waitForCompileWorker)
+
+    while (Atomics.load(barrier, 0) < workerCount) {
+      const ready = Atomics.load(barrier, 0)
+      await Atomics.waitAsync(barrier, 0, ready).value
+    }
+    Atomics.store(barrier, 1, 1)
+    Atomics.notify(barrier, 1)
+
+    assert.deepEqual(await Promise.all(results), Array(workerCount).fill('ok'))
+    const after = compileStats()
+    assert.equal(after.compilations, before.compilations + 1)
+    assert.ok(
+      after.cacheHits + after.deduplications >=
+        before.cacheHits + before.deduplications + workerCount * 2 - 1
+    )
   })
 
   test('survives Worker termination with compilation in flight', async () => {
     for (let iteration = 0; iteration < 8; iteration += 1) {
       const worker = new Worker(
-        new URL('./fixtures/terminate-compile-worker.js', import.meta.url)
+        new URL('./fixtures/terminate-compile-worker.js', import.meta.url),
+        { workerData: iteration }
       )
       await new Promise((resolve, reject) => {
         worker.once('message', resolve)
@@ -226,10 +318,14 @@ test('supports synchronous CommonJS loading', async () => {
   const commonjs = require('@nxtedition/re2')
 
   assert.equal(new commonjs.RE2('foo').test(Buffer.from('foo')), true)
-  assert.deepEqual(
-    (await commonjs.RE2Set.compileAsync(['foo'])).test(Buffer.from('foo')),
-    [0]
-  )
+  assert.deepEqual(new commonjs.RE2('foo').testMany([Buffer.from('foo'), Buffer.from('bar')]), [
+    true,
+    false,
+  ])
+
+  const set = await commonjs.RE2Set.compileAsync(['foo'])
+  assert.deepEqual(set.test(Buffer.from('foo')), [0])
+  assert.deepEqual(set.testMany([Buffer.from('foo'), Buffer.from('bar')]), [[0], []])
 })
 
 test('native addon has no unresolved vendored symbols', {

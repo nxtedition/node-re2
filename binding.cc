@@ -5,32 +5,79 @@
 #include <re2/re2.h>
 #include <re2/set.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <exception>
+#include <functional>
 #include <limits>
+#include <list>
 #include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace {
+
+constexpr size_t kSetCompileCacheMaxSize = 16;
 
 struct ByteView {
   const char* data;
   size_t size;
 };
 
+using SharedSet = std::shared_ptr<const re2::RE2::Set>;
+
+struct SetContext {
+  SharedSet set;
+};
+
 struct SetCompileWork {
   napi_async_work work = nullptr;
   napi_deferred deferred = nullptr;
   std::vector<std::string> patterns;
-  std::unique_ptr<re2::RE2::Set> set;
+  std::string cache_key;
+  SharedSet set;
   std::string error;
 };
+
+struct InFlightSetCompilation {
+  std::condition_variable ready;
+  bool done = false;
+  SharedSet set;
+  std::string error;
+};
+
+struct CachedSet {
+  SharedSet set;
+  std::list<std::string>::iterator position;
+};
+
+struct SetCompileCache {
+  std::mutex mutex;
+  std::list<std::string> lru;
+  std::unordered_map<std::string, CachedSet> entries;
+  std::unordered_map<std::string, std::shared_ptr<InFlightSetCompilation>> in_flight;
+  uint64_t compilations = 0;
+  uint64_t cache_hits = 0;
+  uint64_t deduplications = 0;
+};
+
+SetCompileCache& GetSetCompileCache() {
+  static SetCompileCache cache;
+  return cache;
+}
 
 bool Check(napi_env env, napi_status status, const char* operation) {
   if (status == napi_ok) {
@@ -42,8 +89,7 @@ bool Check(napi_env env, napi_status status, const char* operation) {
 
   const napi_extended_error_info* info = nullptr;
   const char* message = operation;
-  if (napi_get_last_error_info(env, &info) == napi_ok && info != nullptr &&
-      info->error_message != nullptr) {
+  if (napi_get_last_error_info(env, &info) == napi_ok && info != nullptr && info->error_message != nullptr) {
     message = info->error_message;
   }
   napi_throw_error(env, nullptr, message);
@@ -51,12 +97,9 @@ bool Check(napi_env env, napi_status status, const char* operation) {
 }
 
 template <size_t N>
-bool GetArguments(napi_env env, napi_callback_info info,
-                  std::array<napi_value, N>* arguments) {
+bool GetArguments(napi_env env, napi_callback_info info, std::array<napi_value, N>* arguments) {
   size_t count = N;
-  if (!Check(env,
-             napi_get_cb_info(env, info, &count, arguments->data(), nullptr,
-                              nullptr),
+  if (!Check(env, napi_get_cb_info(env, info, &count, arguments->data(), nullptr, nullptr),
              "Failed to read arguments")) {
     return false;
   }
@@ -102,23 +145,20 @@ size_t TypedArrayElementSize(napi_typedarray_type type) {
 
 bool GetByteView(napi_env env, napi_value value, ByteView* view) {
   bool is_buffer = false;
-  if (!Check(env, napi_is_buffer(env, value, &is_buffer),
-             "Failed to inspect binary input")) {
+  if (!Check(env, napi_is_buffer(env, value, &is_buffer), "Failed to inspect binary input")) {
     return false;
   }
   if (is_buffer) {
     void* data = nullptr;
     size_t size = 0;
-    if (!Check(env, napi_get_buffer_info(env, value, &data, &size),
-               "Failed to read Buffer")) {
+    if (!Check(env, napi_get_buffer_info(env, value, &data, &size), "Failed to read Buffer")) {
       return false;
     }
     return AssignByteView(env, data, size, view);
   }
 
   bool is_typed_array = false;
-  if (!Check(env, napi_is_typedarray(env, value, &is_typed_array),
-             "Failed to inspect binary input")) {
+  if (!Check(env, napi_is_typedarray(env, value, &is_typed_array), "Failed to inspect binary input")) {
     return false;
   }
   if (is_typed_array) {
@@ -127,17 +167,14 @@ bool GetByteView(napi_env env, napi_value value, ByteView* view) {
     void* data = nullptr;
     napi_value array_buffer;
     size_t byte_offset = 0;
-    if (!Check(env,
-               napi_get_typedarray_info(env, value, &type, &length, &data,
-                                        &array_buffer, &byte_offset),
+    if (!Check(env, napi_get_typedarray_info(env, value, &type, &length, &data, &array_buffer, &byte_offset),
                "Failed to read TypedArray")) {
       return false;
     }
     (void)array_buffer;
     (void)byte_offset;
     const size_t element_size = TypedArrayElementSize(type);
-    if (element_size == 0 ||
-        length > std::numeric_limits<size_t>::max() / element_size) {
+    if (element_size == 0 || length > std::numeric_limits<size_t>::max() / element_size) {
       napi_throw_range_error(env, nullptr, "TypedArray is too large");
       return false;
     }
@@ -146,8 +183,7 @@ bool GetByteView(napi_env env, napi_value value, ByteView* view) {
   }
 
   bool is_data_view = false;
-  if (!Check(env, napi_is_dataview(env, value, &is_data_view),
-             "Failed to inspect binary input")) {
+  if (!Check(env, napi_is_dataview(env, value, &is_data_view), "Failed to inspect binary input")) {
     return false;
   }
   if (is_data_view) {
@@ -155,9 +191,7 @@ bool GetByteView(napi_env env, napi_value value, ByteView* view) {
     void* data = nullptr;
     napi_value array_buffer;
     size_t byte_offset = 0;
-    if (!Check(env,
-               napi_get_dataview_info(env, value, &size, &data, &array_buffer,
-                                      &byte_offset),
+    if (!Check(env, napi_get_dataview_info(env, value, &size, &data, &array_buffer, &byte_offset),
                "Failed to read DataView")) {
       return false;
     }
@@ -166,13 +200,11 @@ bool GetByteView(napi_env env, napi_value value, ByteView* view) {
     return AssignByteView(env, data, size, view);
   }
 
-  napi_throw_type_error(env, nullptr,
-                        "Expected a Buffer, TypedArray, or DataView");
+  napi_throw_type_error(env, nullptr, "Expected a Buffer, TypedArray, or DataView");
   return false;
 }
 
-bool GetClampedIndex(napi_env env, napi_value value, size_t maximum,
-                     size_t* result) {
+bool GetClampedIndex(napi_env env, napi_value value, size_t maximum, size_t* result) {
   double number = 0;
   const napi_status status = napi_get_value_double(env, value, &number);
   if (status != napi_ok) {
@@ -195,8 +227,7 @@ bool GetClampedIndex(napi_env env, napi_value value, size_t maximum,
   return true;
 }
 
-bool GetText(napi_env env, napi_value input, napi_value offset_value,
-             napi_value length_value, std::string_view* text) {
+bool GetText(napi_env env, napi_value input, napi_value offset_value, napi_value length_value, std::string_view* text) {
   ByteView view;
   if (!GetByteView(env, input, &view)) {
     return false;
@@ -215,11 +246,9 @@ bool GetText(napi_env env, napi_value input, napi_value offset_value,
   return true;
 }
 
-bool GetPatterns(napi_env env, napi_value value,
-                 std::vector<std::string>* patterns) {
+bool GetPatterns(napi_env env, napi_value value, std::vector<std::string>* patterns) {
   bool is_array = false;
-  if (!Check(env, napi_is_array(env, value, &is_array),
-             "Failed to inspect patterns")) {
+  if (!Check(env, napi_is_array(env, value, &is_array), "Failed to inspect patterns")) {
     return false;
   }
   if (!is_array) {
@@ -228,8 +257,7 @@ bool GetPatterns(napi_env env, napi_value value,
   }
 
   uint32_t pattern_count = 0;
-  if (!Check(env, napi_get_array_length(env, value, &pattern_count),
-             "Failed to read patterns")) {
+  if (!Check(env, napi_get_array_length(env, value, &pattern_count), "Failed to read patterns")) {
     return false;
   }
   if (pattern_count > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
@@ -240,8 +268,7 @@ bool GetPatterns(napi_env env, napi_value value,
   patterns->reserve(pattern_count);
   for (uint32_t index = 0; index < pattern_count; ++index) {
     napi_value pattern_value;
-    if (!Check(env, napi_get_element(env, value, index, &pattern_value),
-               "Failed to read pattern")) {
+    if (!Check(env, napi_get_element(env, value, index, &pattern_value), "Failed to read pattern")) {
       return false;
     }
     ByteView pattern;
@@ -253,11 +280,252 @@ bool GetPatterns(napi_env env, napi_value value,
   return true;
 }
 
-std::unique_ptr<re2::RE2::Set> CompileSet(
-    const std::vector<std::string>& patterns, std::string* error) {
+bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* texts) {
+  bool is_array = false;
+  if (!Check(env, napi_is_array(env, value, &is_array), "Failed to inspect inputs")) {
+    return false;
+  }
+  if (!is_array) {
+    napi_throw_type_error(env, nullptr, "inputs must be an array");
+    return false;
+  }
+
+  uint32_t input_count = 0;
+  if (!Check(env, napi_get_array_length(env, value, &input_count), "Failed to read inputs")) {
+    return false;
+  }
+
+  texts->reserve(input_count);
+  for (uint32_t index = 0; index < input_count; ++index) {
+    napi_value input;
+    if (!Check(env, napi_get_element(env, value, index, &input), "Failed to read input")) {
+      return false;
+    }
+    ByteView view;
+    if (!GetByteView(env, input, &view)) {
+      return false;
+    }
+    texts->emplace_back(view.data, view.size);
+  }
+  return true;
+}
+
+constexpr size_t kParallelMaxThreads = 8;
+
+class ParallelExecutor {
+ public:
+  ParallelExecutor() {
+    const size_t hardware_threads = std::max<size_t>(std::thread::hardware_concurrency(), 1);
+    const size_t worker_count = std::min(hardware_threads - 1, kParallelMaxThreads - 1);
+    workers_.reserve(worker_count);
+    try {
+      for (size_t index = 0; index < worker_count; ++index) {
+        workers_.emplace_back([this] { Run(); });
+      }
+    } catch (...) {
+      {
+        std::lock_guard lock(mutex_);
+        stopping_ = true;
+      }
+      ready_.notify_all();
+      for (std::thread& worker : workers_) {
+        worker.join();
+      }
+      throw;
+    }
+  }
+
+  ~ParallelExecutor() {
+    {
+      std::lock_guard lock(mutex_);
+      stopping_ = true;
+    }
+    ready_.notify_all();
+    for (std::thread& worker : workers_) {
+      worker.join();
+    }
+  }
+
+  bool Submit(std::function<void()> task) noexcept {
+    try {
+      {
+        std::lock_guard lock(mutex_);
+        tasks_.push_back(std::move(task));
+      }
+      ready_.notify_one();
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
+ private:
+  void Run() {
+    while (true) {
+      std::function<void()> task;
+      {
+        std::unique_lock lock(mutex_);
+        ready_.wait(lock, [this] { return stopping_ || !tasks_.empty(); });
+        if (stopping_ && tasks_.empty()) {
+          return;
+        }
+        task = std::move(tasks_.front());
+        tasks_.pop_front();
+      }
+      task();
+    }
+  }
+
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::deque<std::function<void()>> tasks_;
+  std::vector<std::thread> workers_;
+  bool stopping_ = false;
+};
+
+ParallelExecutor& GetParallelExecutor() {
+  static ParallelExecutor executor;
+  return executor;
+}
+
+template <typename Function>
+void ParallelFor(size_t size, Function&& function) {
+  constexpr size_t kInputsPerThread = 64;
+  constexpr size_t kChunkSize = 8;
+  const size_t hardware_threads = std::max<size_t>(std::thread::hardware_concurrency(), 1);
+  const size_t thread_count =
+      std::min({hardware_threads, kParallelMaxThreads, (size + kInputsPerThread - 1) / kInputsPerThread});
+  if (thread_count <= 1) {
+    for (size_t index = 0; index < size; ++index) {
+      function(index);
+    }
+    return;
+  }
+
+  struct State {
+    std::atomic<size_t> next{0};
+    std::atomic<size_t> remaining{1};
+    std::atomic<bool> stopped{false};
+    std::mutex mutex;
+    std::condition_variable completed;
+    std::exception_ptr error;
+  };
+
+  ParallelExecutor& executor = GetParallelExecutor();
+  auto state = std::make_shared<State>();
+  auto shared_function = std::make_shared<std::decay_t<Function>>(std::forward<Function>(function));
+  const auto run = [state, shared_function, size] {
+    try {
+      while (!state->stopped.load(std::memory_order_relaxed)) {
+        const size_t begin = state->next.fetch_add(kChunkSize, std::memory_order_relaxed);
+        if (begin >= size) {
+          break;
+        }
+        const size_t end = std::min(begin + kChunkSize, size);
+        for (size_t index = begin; index < end; ++index) {
+          (*shared_function)(index);
+        }
+      }
+    } catch (...) {
+      state->stopped.store(true, std::memory_order_relaxed);
+      std::lock_guard lock(state->mutex);
+      if (state->error == nullptr) {
+        state->error = std::current_exception();
+      }
+    }
+    if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      state->completed.notify_one();
+    }
+  };
+
+  for (size_t index = 1; index < thread_count; ++index) {
+    state->remaining.fetch_add(1, std::memory_order_relaxed);
+    bool submitted = false;
+    try {
+      submitted = executor.Submit(run);
+    } catch (...) {
+      submitted = false;
+    }
+    if (!submitted) {
+      state->remaining.fetch_sub(1, std::memory_order_relaxed);
+      break;
+    }
+  }
+
+  run();
+  std::unique_lock lock(state->mutex);
+  state->completed.wait(lock, [&state] { return state->remaining.load(std::memory_order_acquire) == 0; });
+  if (state->error != nullptr) {
+    std::rethrow_exception(state->error);
+  }
+}
+
+std::string SetCompileCacheKey(const std::vector<std::string>& patterns) {
+  size_t key_size = 0;
+  for (const std::string& pattern : patterns) {
+    if (key_size > std::numeric_limits<size_t>::max() - sizeof(uint64_t) ||
+        pattern.size() > std::numeric_limits<size_t>::max() - key_size - sizeof(uint64_t)) {
+      throw std::length_error("Pattern set is too large");
+    }
+    key_size += sizeof(uint64_t) + pattern.size();
+  }
+
+  std::string key;
+  key.reserve(key_size);
+  for (const std::string& pattern : patterns) {
+    const uint64_t pattern_size = pattern.size();
+    for (size_t byte = 0; byte < sizeof(pattern_size); ++byte) {
+      key.push_back(static_cast<char>((pattern_size >> (byte * 8)) & UINT64_C(0xff)));
+    }
+    key.append(pattern);
+  }
+  return key;
+}
+
+SharedSet FindCachedSetLocked(SetCompileCache& cache, const std::string& key) {
+  const auto entry = cache.entries.find(key);
+  if (entry == cache.entries.end()) {
+    return nullptr;
+  }
+  cache.lru.splice(cache.lru.end(), cache.lru, entry->second.position);
+  ++cache.cache_hits;
+  return entry->second.set;
+}
+
+SharedSet FindCachedSet(const std::string& key) {
+  SetCompileCache& cache = GetSetCompileCache();
+  std::lock_guard lock(cache.mutex);
+  return FindCachedSetLocked(cache, key);
+}
+
+void StoreCachedSetLocked(SetCompileCache& cache, const std::string& key, SharedSet set) {
+  const auto existing = cache.entries.find(key);
+  if (existing != cache.entries.end()) {
+    existing->second.set = std::move(set);
+    cache.lru.splice(cache.lru.end(), cache.lru, existing->second.position);
+    return;
+  }
+
+  cache.lru.push_back(key);
+  auto position = cache.lru.end();
+  --position;
+  try {
+    cache.entries.emplace(key, CachedSet{std::move(set), position});
+  } catch (...) {
+    cache.lru.pop_back();
+    throw;
+  }
+
+  while (cache.entries.size() > kSetCompileCacheMaxSize) {
+    cache.entries.erase(cache.lru.front());
+    cache.lru.pop_front();
+  }
+}
+
+SharedSet CompileSet(const std::vector<std::string>& patterns, std::string* error) {
   re2::RE2::Options options;
   options.set_log_errors(false);
-  auto set = std::make_unique<re2::RE2::Set>(options, re2::RE2::UNANCHORED);
+  auto set = std::make_shared<re2::RE2::Set>(options, re2::RE2::UNANCHORED);
 
   for (size_t index = 0; index < patterns.size(); ++index) {
     const int pattern_index = set->Add(patterns[index], error);
@@ -277,22 +545,86 @@ std::unique_ptr<re2::RE2::Set> CompileSet(
   return set;
 }
 
+SharedSet GetOrCompileSet(const std::vector<std::string>& patterns, const std::string& key, std::string* error) {
+  SetCompileCache& cache = GetSetCompileCache();
+  std::shared_ptr<InFlightSetCompilation> state;
+
+  {
+    std::unique_lock lock(cache.mutex);
+    if (SharedSet set = FindCachedSetLocked(cache, key)) {
+      return set;
+    }
+
+    const auto in_flight = cache.in_flight.find(key);
+    if (in_flight != cache.in_flight.end()) {
+      state = in_flight->second;
+      ++cache.deduplications;
+      state->ready.wait(lock, [&state] { return state->done; });
+      *error = state->error;
+      return state->set;
+    }
+
+    state = std::make_shared<InFlightSetCompilation>();
+    cache.in_flight.emplace(key, state);
+    ++cache.compilations;
+  }
+
+  SharedSet set;
+  std::string compilation_error;
+  try {
+    set = CompileSet(patterns, &compilation_error);
+  } catch (const std::exception& exception) {
+    compilation_error = exception.what();
+  } catch (...) {
+    compilation_error = "Unknown RE2Set compilation failure";
+  }
+
+  {
+    std::lock_guard lock(cache.mutex);
+    if (set != nullptr) {
+      try {
+        StoreCachedSetLocked(cache, key, set);
+      } catch (...) {
+        // A cache allocation failure must not discard a compiled result.
+      }
+    }
+    state->set = set;
+    state->error = std::move(compilation_error);
+    state->done = true;
+    cache.in_flight.erase(key);
+  }
+  state->ready.notify_all();
+
+  *error = state->error;
+  return set;
+}
+
 template <typename T>
 void Finalize(napi_env, void* data, void*) {
   delete static_cast<T*>(data);
 }
 
 template <typename T>
-bool CreateExternal(napi_env env, std::unique_ptr<T> value,
-                    napi_value* result) {
-  if (!Check(env,
-             napi_create_external(env, value.get(), Finalize<T>, nullptr,
-                                  result),
+bool CreateExternal(napi_env env, std::unique_ptr<T> value, napi_value* result) {
+  if (!Check(env, napi_create_external(env, value.get(), Finalize<T>, nullptr, result),
              "Failed to create native context")) {
     return false;
   }
   value.release();
   return true;
+}
+
+napi_status CreateSetExternalRaw(napi_env env, SharedSet set, napi_value* result) {
+  auto context = std::make_unique<SetContext>(SetContext{std::move(set)});
+  const napi_status status = napi_create_external(env, context.get(), Finalize<SetContext>, nullptr, result);
+  if (status == napi_ok) {
+    context.release();
+  }
+  return status;
+}
+
+bool CreateSetExternal(napi_env env, SharedSet set, napi_value* result) {
+  return Check(env, CreateSetExternalRaw(env, std::move(set), result), "Failed to create native RE2Set context");
 }
 
 napi_value RegexInit(napi_env env, napi_callback_info info) {
@@ -309,8 +641,7 @@ napi_value RegexInit(napi_env env, napi_callback_info info) {
 
     re2::RE2::Options options;
     options.set_log_errors(false);
-    auto regex = std::make_unique<re2::RE2>(
-        std::string_view(pattern.data, pattern.size), options);
+    auto regex = std::make_unique<re2::RE2>(std::string_view(pattern.data, pattern.size), options);
     if (!regex->ok()) {
       napi_throw_error(env, nullptr, regex->error().c_str());
       return nullptr;
@@ -332,9 +663,7 @@ napi_value RegexTest(napi_env env, napi_callback_info info) {
 
   try {
     re2::RE2* regex = nullptr;
-    if (!Check(env,
-               napi_get_value_external(env, arguments[0],
-                                       reinterpret_cast<void**>(&regex)),
+    if (!Check(env, napi_get_value_external(env, arguments[0], reinterpret_cast<void**>(&regex)),
                "Failed to read regex context")) {
       return nullptr;
     }
@@ -345,11 +674,49 @@ napi_value RegexTest(napi_env env, napi_callback_info info) {
     }
 
     napi_value result;
-    if (!Check(env,
-               napi_get_boolean(env, re2::RE2::PartialMatch(text, *regex),
-                                &result),
+    if (!Check(env, napi_get_boolean(env, re2::RE2::PartialMatch(text, *regex), &result),
                "Failed to create match result")) {
       return nullptr;
+    }
+    return result;
+  } catch (const std::exception& error) {
+    napi_throw_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
+
+napi_value RegexTestMany(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 2> arguments;
+  if (!GetArguments(env, info, &arguments)) {
+    return nullptr;
+  }
+
+  try {
+    re2::RE2* regex = nullptr;
+    if (!Check(env, napi_get_value_external(env, arguments[0], reinterpret_cast<void**>(&regex)),
+               "Failed to read regex context")) {
+      return nullptr;
+    }
+
+    std::vector<std::string_view> texts;
+    if (!GetTexts(env, arguments[1], &texts)) {
+      return nullptr;
+    }
+
+    std::vector<uint8_t> matches(texts.size());
+    ParallelFor(texts.size(), [&](size_t index) { matches[index] = re2::RE2::PartialMatch(texts[index], *regex); });
+
+    napi_value result;
+    if (!Check(env, napi_create_array_with_length(env, matches.size(), &result),
+               "Failed to create regex batch result")) {
+      return nullptr;
+    }
+    for (size_t index = 0; index < matches.size(); ++index) {
+      napi_value match;
+      if (!Check(env, napi_get_boolean(env, matches[index] != 0, &match), "Failed to create regex batch match") ||
+          !Check(env, napi_set_element(env, result, index, match), "Failed to write regex batch match")) {
+        return nullptr;
+      }
     }
     return result;
   } catch (const std::exception& error) {
@@ -365,63 +732,19 @@ napi_value SetInit(napi_env env, napi_callback_info info) {
   }
 
   try {
-    bool is_array = false;
-    if (!Check(env, napi_is_array(env, arguments[0], &is_array),
-               "Failed to inspect patterns")) {
-      return nullptr;
-    }
-    if (!is_array) {
-      napi_throw_type_error(env, nullptr, "patterns must be an array");
+    std::vector<std::string> patterns;
+    if (!GetPatterns(env, arguments[0], &patterns)) {
       return nullptr;
     }
 
-    uint32_t pattern_count = 0;
-    if (!Check(env,
-               napi_get_array_length(env, arguments[0], &pattern_count),
-               "Failed to read patterns")) {
+    std::string error;
+    SharedSet set = CompileSet(patterns, &error);
+    if (set == nullptr) {
+      napi_throw_error(env, nullptr, error.empty() ? "Failed to compile RE2Set" : error.c_str());
       return nullptr;
     }
-    if (pattern_count > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
-      napi_throw_range_error(env, nullptr, "Too many patterns");
-      return nullptr;
-    }
-
-    re2::RE2::Options options;
-    options.set_log_errors(false);
-    auto set = std::make_unique<re2::RE2::Set>(options, re2::RE2::UNANCHORED);
-
-    for (uint32_t index = 0; index < pattern_count; ++index) {
-      napi_value pattern_value;
-      if (!Check(env,
-                 napi_get_element(env, arguments[0], index, &pattern_value),
-                 "Failed to read pattern")) {
-        return nullptr;
-      }
-      ByteView pattern;
-      if (!GetByteView(env, pattern_value, &pattern)) {
-        return nullptr;
-      }
-
-      std::string error;
-      const int pattern_index = set->Add(
-          std::string_view(pattern.data, pattern.size), &error);
-      if (pattern_index < 0) {
-        napi_throw_error(env, nullptr, error.c_str());
-        return nullptr;
-      }
-      if (pattern_index != static_cast<int>(index)) {
-        napi_throw_error(env, nullptr, "Unexpected RE2Set pattern index");
-        return nullptr;
-      }
-    }
-
-    if (!set->Compile()) {
-      napi_throw_error(env, nullptr, "Failed to compile RE2Set");
-      return nullptr;
-    }
-
     napi_value result;
-    return CreateExternal(env, std::move(set), &result) ? result : nullptr;
+    return CreateSetExternal(env, std::move(set), &result) ? result : nullptr;
   } catch (const std::exception& error) {
     napi_throw_error(env, nullptr, error.what());
     return nullptr;
@@ -431,7 +754,7 @@ napi_value SetInit(napi_env env, napi_callback_info info) {
 void SetCompileExecute(napi_env, void* data) {
   auto* work = static_cast<SetCompileWork*>(data);
   try {
-    work->set = CompileSet(work->patterns, &work->error);
+    work->set = GetOrCompileSet(work->patterns, work->cache_key, &work->error);
   } catch (const std::exception& error) {
     work->error = error.what();
   } catch (...) {
@@ -439,11 +762,9 @@ void SetCompileExecute(napi_env, void* data) {
   }
 }
 
-void RejectDeferred(napi_env env, napi_deferred deferred,
-                    const std::string& message) {
+void RejectDeferred(napi_env env, napi_deferred deferred, const std::string& message) {
   napi_value message_value;
-  if (napi_create_string_utf8(env, message.c_str(), message.size(),
-                              &message_value) != napi_ok) {
+  if (napi_create_string_utf8(env, message.c_str(), message.size(), &message_value) != napi_ok) {
     return;
   }
   napi_value error;
@@ -462,20 +783,23 @@ void SetCompileComplete(napi_env env, napi_status status, void* data) {
     return;
   }
   if (work->set == nullptr) {
-    RejectDeferred(
-        env, work->deferred,
-        work->error.empty() ? "Failed to compile RE2Set" : work->error);
+    RejectDeferred(env, work->deferred, work->error.empty() ? "Failed to compile RE2Set" : work->error);
     return;
   }
 
   napi_value context;
-  if (napi_create_external(env, work->set.get(), Finalize<re2::RE2::Set>,
-                           nullptr, &context) != napi_ok) {
-    RejectDeferred(env, work->deferred,
-                   "Failed to create native RE2Set context");
+  try {
+    if (CreateSetExternalRaw(env, std::move(work->set), &context) != napi_ok) {
+      RejectDeferred(env, work->deferred, "Failed to create native RE2Set context");
+      return;
+    }
+  } catch (const std::exception& error) {
+    RejectDeferred(env, work->deferred, error.what());
+    return;
+  } catch (...) {
+    RejectDeferred(env, work->deferred, "Failed to create native RE2Set context");
     return;
   }
-  work->set.release();
   (void)napi_resolve_deferred(env, work->deferred, context);
 }
 
@@ -490,6 +814,7 @@ napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
     if (!GetPatterns(env, arguments[0], &work->patterns)) {
       return nullptr;
     }
+    work->cache_key = SetCompileCacheKey(work->patterns);
 
     napi_value promise;
     if (!Check(env, napi_create_promise(env, &work->deferred, &promise),
@@ -497,21 +822,29 @@ napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
       return nullptr;
     }
 
+    if (SharedSet set = FindCachedSet(work->cache_key)) {
+      napi_value context;
+      if (!CreateSetExternal(env, std::move(set), &context)) {
+        return nullptr;
+      }
+      if (!Check(env, napi_resolve_deferred(env, work->deferred, context),
+                 "Failed to resolve cached RE2Set compilation")) {
+        return nullptr;
+      }
+      return promise;
+    }
+
     napi_value resource_name;
-    if (!Check(env,
-               napi_create_string_utf8(env, "@nxtedition/re2:compile-set",
-                                       NAPI_AUTO_LENGTH, &resource_name),
+    if (!Check(env, napi_create_string_utf8(env, "@nxtedition/re2:compile-set", NAPI_AUTO_LENGTH, &resource_name),
                "Failed to create RE2Set async resource name") ||
         !Check(env,
-               napi_create_async_work(env, nullptr, resource_name,
-                                      SetCompileExecute, SetCompileComplete,
-                                      work.get(), &work->work),
+               napi_create_async_work(env, nullptr, resource_name, SetCompileExecute, SetCompileComplete, work.get(),
+                                      &work->work),
                "Failed to create RE2Set async work")) {
       return nullptr;
     }
 
-    if (!Check(env, napi_queue_async_work(env, work->work),
-               "Failed to queue RE2Set async work")) {
+    if (!Check(env, napi_queue_async_work(env, work->work), "Failed to queue RE2Set async work")) {
       (void)napi_delete_async_work(env, work->work);
       return nullptr;
     }
@@ -524,6 +857,33 @@ napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
   }
 }
 
+const char* SetMatchErrorMessage(re2::RE2::Set::ErrorKind error) {
+  if (error == re2::RE2::Set::kOutOfMemory) {
+    return "RE2Set matching failed: DFA out of memory";
+  }
+  if (error == re2::RE2::Set::kNotCompiled) {
+    return "RE2Set matching failed: set is not compiled";
+  }
+  if (error == re2::RE2::Set::kInconsistent) {
+    return "RE2Set matching failed: inconsistent result";
+  }
+  return "RE2Set matching failed";
+}
+
+bool CreateSetMatchResult(napi_env env, const std::vector<int>& indices, napi_value* result) {
+  if (!Check(env, napi_create_array_with_length(env, indices.size(), result), "Failed to create set result")) {
+    return false;
+  }
+  for (size_t index = 0; index < indices.size(); ++index) {
+    napi_value element;
+    if (!Check(env, napi_create_int32(env, indices[index], &element), "Failed to create pattern index") ||
+        !Check(env, napi_set_element(env, *result, index, element), "Failed to write pattern index")) {
+      return false;
+    }
+  }
+  return true;
+}
+
 napi_value SetTest(napi_env env, napi_callback_info info) {
   std::array<napi_value, 4> arguments;
   if (!GetArguments(env, info, &arguments)) {
@@ -531,13 +891,12 @@ napi_value SetTest(napi_env env, napi_callback_info info) {
   }
 
   try {
-    re2::RE2::Set* set = nullptr;
-    if (!Check(env,
-               napi_get_value_external(env, arguments[0],
-                                       reinterpret_cast<void**>(&set)),
+    SetContext* context = nullptr;
+    if (!Check(env, napi_get_value_external(env, arguments[0], reinterpret_cast<void**>(&context)),
                "Failed to read set context")) {
       return nullptr;
     }
+    const re2::RE2::Set& set = *context->set;
 
     std::string_view text;
     if (!GetText(env, arguments[1], arguments[2], arguments[3], &text)) {
@@ -546,32 +905,64 @@ napi_value SetTest(napi_env env, napi_callback_info info) {
 
     std::vector<int> indices;
     re2::RE2::Set::ErrorInfo error_info{re2::RE2::Set::kNoError};
-    const bool matched = set->Match(text, &indices, &error_info);
+    const bool matched = set.Match(text, &indices, &error_info);
     if (!matched && error_info.kind != re2::RE2::Set::kNoError) {
-      const char* message = "RE2Set matching failed";
-      if (error_info.kind == re2::RE2::Set::kOutOfMemory) {
-        message = "RE2Set matching failed: DFA out of memory";
-      } else if (error_info.kind == re2::RE2::Set::kNotCompiled) {
-        message = "RE2Set matching failed: set is not compiled";
-      } else if (error_info.kind == re2::RE2::Set::kInconsistent) {
-        message = "RE2Set matching failed: inconsistent result";
-      }
-      napi_throw_error(env, nullptr, message);
+      napi_throw_error(env, nullptr, SetMatchErrorMessage(error_info.kind));
       return nullptr;
     }
 
     napi_value result;
-    if (!Check(env,
-               napi_create_array_with_length(env, indices.size(), &result),
-               "Failed to create set result")) {
+    return CreateSetMatchResult(env, indices, &result) ? result : nullptr;
+  } catch (const std::exception& error) {
+    napi_throw_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
+
+napi_value SetTestMany(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 2> arguments;
+  if (!GetArguments(env, info, &arguments)) {
+    return nullptr;
+  }
+
+  try {
+    SetContext* context = nullptr;
+    if (!Check(env, napi_get_value_external(env, arguments[0], reinterpret_cast<void**>(&context)),
+               "Failed to read set context")) {
       return nullptr;
     }
-    for (size_t index = 0; index < indices.size(); ++index) {
-      napi_value element;
-      if (!Check(env, napi_create_int32(env, indices[index], &element),
-                 "Failed to create pattern index") ||
-          !Check(env, napi_set_element(env, result, index, element),
-                 "Failed to write pattern index")) {
+    const re2::RE2::Set& set = *context->set;
+
+    std::vector<std::string_view> texts;
+    if (!GetTexts(env, arguments[1], &texts)) {
+      return nullptr;
+    }
+
+    std::vector<std::vector<int>> matches(texts.size());
+    std::vector<re2::RE2::Set::ErrorKind> errors(texts.size(), re2::RE2::Set::kNoError);
+    ParallelFor(texts.size(), [&](size_t index) {
+      re2::RE2::Set::ErrorInfo error_info{re2::RE2::Set::kNoError};
+      const bool matched = set.Match(texts[index], &matches[index], &error_info);
+      if (!matched) {
+        errors[index] = error_info.kind;
+      }
+    });
+
+    for (const re2::RE2::Set::ErrorKind error : errors) {
+      if (error != re2::RE2::Set::kNoError) {
+        napi_throw_error(env, nullptr, SetMatchErrorMessage(error));
+        return nullptr;
+      }
+    }
+
+    napi_value result;
+    if (!Check(env, napi_create_array_with_length(env, matches.size(), &result), "Failed to create set batch result")) {
+      return nullptr;
+    }
+    for (size_t index = 0; index < matches.size(); ++index) {
+      napi_value match;
+      if (!CreateSetMatchResult(env, matches[index], &match) ||
+          !Check(env, napi_set_element(env, result, index, match), "Failed to write set batch match")) {
         return nullptr;
       }
     }
@@ -582,15 +973,49 @@ napi_value SetTest(napi_env env, napi_callback_info info) {
   }
 }
 
-bool ExportFunction(napi_env env, napi_value exports, const char* name,
-                    napi_callback callback) {
+bool SetNumberProperty(napi_env env, napi_value object, const char* name, double number) {
+  napi_value value;
+  return Check(env, napi_create_double(env, number, &value), "Failed to create cache statistic") &&
+         Check(env, napi_set_named_property(env, object, name, value), "Failed to write cache statistic");
+}
+
+napi_value SetCompileCacheStats(napi_env env, napi_callback_info) {
+  try {
+    uint64_t compilations = 0;
+    uint64_t cache_hits = 0;
+    uint64_t deduplications = 0;
+    size_t size = 0;
+    size_t in_flight = 0;
+    {
+      SetCompileCache& cache = GetSetCompileCache();
+      std::lock_guard lock(cache.mutex);
+      compilations = cache.compilations;
+      cache_hits = cache.cache_hits;
+      deduplications = cache.deduplications;
+      size = cache.entries.size();
+      in_flight = cache.in_flight.size();
+    }
+
+    napi_value result;
+    if (!Check(env, napi_create_object(env, &result), "Failed to create cache statistics") ||
+        !SetNumberProperty(env, result, "compilations", compilations) ||
+        !SetNumberProperty(env, result, "cacheHits", cache_hits) ||
+        !SetNumberProperty(env, result, "deduplications", deduplications) ||
+        !SetNumberProperty(env, result, "size", size) || !SetNumberProperty(env, result, "inFlight", in_flight)) {
+      return nullptr;
+    }
+    return result;
+  } catch (const std::exception& error) {
+    napi_throw_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
+
+bool ExportFunction(napi_env env, napi_value exports, const char* name, napi_callback callback) {
   napi_value function;
-  return Check(env,
-               napi_create_function(env, name, NAPI_AUTO_LENGTH, callback,
-                                    nullptr, &function),
+  return Check(env, napi_create_function(env, name, NAPI_AUTO_LENGTH, callback, nullptr, &function),
                "Failed to create native function") &&
-         Check(env, napi_set_named_property(env, exports, name, function),
-               "Failed to export native function");
+         Check(env, napi_set_named_property(env, exports, name, function), "Failed to export native function");
 }
 
 }  // namespace
@@ -598,9 +1023,12 @@ bool ExportFunction(napi_env env, napi_value exports, const char* name,
 NAPI_MODULE_INIT() {
   if (!ExportFunction(env, exports, "regex_init", RegexInit) ||
       !ExportFunction(env, exports, "regex_test", RegexTest) ||
+      !ExportFunction(env, exports, "regex_test_many", RegexTestMany) ||
       !ExportFunction(env, exports, "set_init", SetInit) ||
       !ExportFunction(env, exports, "set_compile_async", SetCompileAsync) ||
-      !ExportFunction(env, exports, "set_test", SetTest)) {
+      !ExportFunction(env, exports, "set_compile_cache_stats", SetCompileCacheStats) ||
+      !ExportFunction(env, exports, "set_test", SetTest) ||
+      !ExportFunction(env, exports, "set_test_many", SetTestMany)) {
     return nullptr;
   }
   return exports;

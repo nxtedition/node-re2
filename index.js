@@ -1,10 +1,7 @@
 import { Buffer } from 'node:buffer'
 import binding from './binding.js'
 
-const COMPILE_CACHE_MAX_SIZE = 16
 const kCompiledContext = Symbol('compiledContext')
-const compileCache = new Map()
-const compileLocks = new Map()
 
 /**
  * @param {unknown} value
@@ -26,37 +23,6 @@ function encodePattern(pattern) {
   return typeof pattern === 'string'
     ? Buffer.from(pattern)
     : asBinaryView(pattern, 'pattern')
-}
-
-/**
- * @param {unknown} patterns
- * @returns {Buffer[]}
- */
-function snapshotPatterns(patterns) {
-  if (!Array.isArray(patterns)) {
-    throw new TypeError('patterns must be an array')
-  }
-  return Array.from(patterns, pattern => {
-    if (typeof pattern === 'string') {
-      return Buffer.from(pattern)
-    }
-    const view = asBinaryView(pattern, 'pattern')
-    return Buffer.from(new Uint8Array(view.buffer, view.byteOffset, view.byteLength))
-  })
-}
-
-/**
- * @param {readonly Buffer[]} patterns
- * @returns {string}
- */
-function compileCacheKey(patterns) {
-  return JSON.stringify(patterns.map(pattern => pattern.toString('base64')))
-}
-
-function trimCompileCache() {
-  while (compileCache.size > COMPILE_CACHE_MAX_SIZE) {
-    compileCache.delete(compileCache.keys().next().value)
-  }
 }
 
 export class RE2 {
@@ -85,6 +51,22 @@ export class RE2 {
     }
     return binding.regex_test(this.#context, buffer, byteOffset, byteLength)
   }
+
+  /**
+   * Matches a batch of binary inputs in parallel.
+   *
+   * @param {readonly NodeJS.ArrayBufferView[]} inputs
+   * @returns {boolean[]}
+   */
+  testMany(inputs) {
+    if (!Array.isArray(inputs)) {
+      throw new TypeError('inputs must be an array')
+    }
+    return binding.regex_test_many(
+      this.#context,
+      Array.from(inputs, input => asBinaryView(input, 'input'))
+    )
+  }
 }
 
 export class RE2Set {
@@ -107,38 +89,18 @@ export class RE2Set {
 
   /**
    * Compiles patterns on the Node.js worker pool. Byte-identical ordered pattern
-   * sets share one in-flight compilation and a bounded per-environment cache.
+   * sets share one process-wide in-flight compilation and bounded native cache.
    *
    * @param {readonly (string | NodeJS.ArrayBufferView)[]} patterns
    * @returns {Promise<RE2Set>}
    */
   static compileAsync(patterns) {
-    const snapshot = snapshotPatterns(patterns)
-    const key = compileCacheKey(snapshot)
-
-    const cached = compileCache.get(key)
-    if (cached) {
-      compileCache.delete(key)
-      compileCache.set(key, cached)
-      return Promise.resolve(cached)
+    if (!Array.isArray(patterns)) {
+      throw new TypeError('patterns must be an array')
     }
-
-    const locked = compileLocks.get(key)
-    if (locked) {
-      return locked
-    }
-
-    const compilation = binding
-      .set_compile_async(snapshot)
-      .then(context => {
-        const expressions = new RE2Set(kCompiledContext, context)
-        compileCache.set(key, expressions)
-        trimCompileCache()
-        return expressions
-      })
-      .finally(() => compileLocks.delete(key))
-    compileLocks.set(key, compilation)
-    return compilation
+    return binding
+      .set_compile_async(Array.from(patterns, encodePattern))
+      .then(context => new RE2Set(kCompiledContext, context))
   }
 
   /**
@@ -157,5 +119,21 @@ export class RE2Set {
     }
 
     return binding.set_test(this.#context, buffer, byteOffset, byteLength)
+  }
+
+  /**
+   * Matches a batch of binary inputs in parallel.
+   *
+   * @param {readonly NodeJS.ArrayBufferView[]} inputs
+   * @returns {number[][]}
+   */
+  testMany(inputs) {
+    if (!Array.isArray(inputs)) {
+      throw new TypeError('inputs must be an array')
+    }
+    return binding.set_test_many(
+      this.#context,
+      Array.from(inputs, input => asBinaryView(input, 'input'))
+    )
   }
 }

@@ -14,6 +14,9 @@ const asyncExpressions: RE2Set = await RE2Set.compileAsync([
   buffer,
   dataView,
 ] as const)
+const batchMatches: boolean[] = expression.testMany(views)
+const batchIndices: number[][] = expressions.testMany(views)
+void [batchMatches, batchIndices]
 
 for (const view of views) {
   const matches: boolean = expression.test(view, 0, view.byteLength)
@@ -28,7 +31,11 @@ new RE2(42)
 new RE2(new ArrayBuffer(3))
 // @ts-expect-error input must be a binary view
 expression.test('foo')
+// @ts-expect-error testMany inputs must be binary views
+expression.testMany(['foo'])
 // @ts-expect-error RE2Set requires an array
 new RE2Set('foo')
+// @ts-expect-error testMany requires an array
+expressions.testMany(buffer)
 // @ts-expect-error RE2Set.compileAsync requires an array
 RE2Set.compileAsync('foo')
