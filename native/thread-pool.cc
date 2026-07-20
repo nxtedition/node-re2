@@ -164,6 +164,7 @@ void ReleaseBatchThreadPoolEnvironment() noexcept {
     }
   } catch (...) {
   }
+  pool.reset();
 }
 
 }  // namespace node_re2
