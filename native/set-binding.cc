@@ -18,8 +18,7 @@
 namespace node_re2 {
 namespace {
 
-constexpr napi_type_tag kSetContextTypeTag{UINT64_C(0xa84ea42fab944775),
-                                           UINT64_C(0xb4cd9a935ec36f8e)};
+constexpr napi_type_tag kSetContextTypeTag{UINT64_C(0xa84ea42fab944775), UINT64_C(0xb4cd9a935ec36f8e)};
 
 struct SetCompileWork {
   napi_async_work work = nullptr;
@@ -31,13 +30,12 @@ struct SetCompileWork {
 };
 
 napi_status CreateSetExternalRaw(napi_env env, SharedSet set, napi_value* result) {
-  return CreateTaggedExternalRaw(env, std::make_unique<SetContext>(SetContext{std::move(set)}),
-                                 &kSetContextTypeTag, result);
+  return CreateTaggedExternalRaw(env, std::make_unique<SetContext>(SetContext{std::move(set)}), &kSetContextTypeTag,
+                                 result);
 }
 
 bool CreateSetExternal(napi_env env, SharedSet set, napi_value* result) {
-  return Check(env, CreateSetExternalRaw(env, std::move(set), result),
-               "Failed to create native RE2Set context");
+  return Check(env, CreateSetExternalRaw(env, std::move(set), result), "Failed to create native RE2Set context");
 }
 
 napi_value SetInit(napi_env env, napi_callback_info info) {
@@ -117,14 +115,12 @@ void SetCompileComplete(napi_env env, napi_status status, void* data) {
   }
 
   if (work->set == nullptr) {
-    const bool unexpected =
-        work->unexpected_failure || SetCompilationFailedUnexpectedly(work->pending);
+    const bool unexpected = work->unexpected_failure || SetCompilationFailedUnexpectedly(work->pending);
     const std::string_view error = SetCompilationError(work->pending);
     if (work->owner) {
       ReleaseSetCompilation(work->pending);
     }
-    RejectDeferred(env, work->deferred,
-                   unexpected || error.empty() ? "Failed to compile RE2Set" : error);
+    RejectDeferred(env, work->deferred, unexpected || error.empty() ? "Failed to compile RE2Set" : error);
     return;
   }
 
@@ -150,8 +146,7 @@ void SetCompileComplete(napi_env env, napi_status status, void* data) {
   }
 }
 
-bool ResolveCompiledSet(napi_env env, napi_deferred deferred, SharedSet set,
-                        std::string_view failure_message) {
+bool ResolveCompiledSet(napi_env env, napi_deferred deferred, SharedSet set, std::string_view failure_message) {
   napi_value context;
   if (CreateSetExternalRaw(env, std::move(set), &context) != napi_ok) {
     RejectDeferred(env, deferred, "Failed to create native RE2Set context");
@@ -172,8 +167,7 @@ napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
 
   napi_deferred deferred;
   napi_value promise;
-  if (!Check(env, napi_create_promise(env, &deferred, &promise),
-             "Failed to create RE2Set compilation promise")) {
+  if (!Check(env, napi_create_promise(env, &deferred, &promise), "Failed to create RE2Set compilation promise")) {
     return nullptr;
   }
 
@@ -190,21 +184,19 @@ napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
     }
 
     if (SharedSet cached_set = FindCachedSet(cache_key)) {
-      ResolveCompiledSet(env, deferred, std::move(cached_set),
-                         "Failed to resolve cached RE2Set compilation");
+      ResolveCompiledSet(env, deferred, std::move(cached_set), "Failed to resolve cached RE2Set compilation");
       return promise;
     }
 
     work = std::make_unique<SetCompileWork>();
     work->deferred = deferred;
     napi_value resource_name;
-    if (napi_create_string_utf8(env, "@nxtedition/re2:compile-set", NAPI_AUTO_LENGTH,
-                                &resource_name) != napi_ok) {
+    if (napi_create_string_utf8(env, "@nxtedition/re2:compile-set", NAPI_AUTO_LENGTH, &resource_name) != napi_ok) {
       RejectDeferred(env, deferred, "Failed to create RE2Set async resource name");
       return promise;
     }
-    if (napi_create_async_work(env, nullptr, resource_name, SetCompileExecute, SetCompileComplete,
-                               work.get(), &work->work) != napi_ok) {
+    if (napi_create_async_work(env, nullptr, resource_name, SetCompileExecute, SetCompileComplete, work.get(),
+                               &work->work) != napi_ok) {
       RejectDeferred(env, deferred, "Failed to create RE2Set async work");
       return promise;
     }
@@ -213,8 +205,7 @@ napi_value SetCompileAsync(napi_env env, napi_callback_info info) {
     if (ticket.cached_set != nullptr) {
       (void)napi_delete_async_work(env, work->work);
       work->work = nullptr;
-      ResolveCompiledSet(env, deferred, std::move(ticket.cached_set),
-                         "Failed to resolve cached RE2Set compilation");
+      ResolveCompiledSet(env, deferred, std::move(ticket.cached_set), "Failed to resolve cached RE2Set compilation");
       return promise;
     }
     work->pending = std::move(ticket.pending);
@@ -270,16 +261,13 @@ const char* SetMatchErrorMessage(re2::RE2::Set::ErrorKind error) {
 }
 
 bool CreateSetMatchResult(napi_env env, const std::vector<int>& indices, napi_value* result) {
-  if (!Check(env, napi_create_array_with_length(env, indices.size(), result),
-             "Failed to create set result")) {
+  if (!Check(env, napi_create_array_with_length(env, indices.size(), result), "Failed to create set result")) {
     return false;
   }
   for (size_t index = 0; index < indices.size(); ++index) {
     napi_value element;
-    if (!Check(env, napi_create_int32(env, indices[index], &element),
-               "Failed to create pattern index") ||
-        !Check(env, napi_set_element(env, *result, index, element),
-               "Failed to write pattern index")) {
+    if (!Check(env, napi_create_int32(env, indices[index], &element), "Failed to create pattern index") ||
+        !Check(env, napi_set_element(env, *result, index, element), "Failed to write pattern index")) {
       return false;
     }
   }
@@ -294,8 +282,7 @@ napi_value SetTest(napi_env env, napi_callback_info info) {
 
   try {
     SetContext* context = nullptr;
-    if (!GetTaggedExternal(env, arguments[0], &kSetContextTypeTag, "Invalid RE2Set context",
-                           &context)) {
+    if (!GetTaggedExternal(env, arguments[0], &kSetContextTypeTag, "Invalid RE2Set context", &context)) {
       return nullptr;
     }
     const re2::RE2::Set& set = *context->set;
@@ -322,15 +309,14 @@ napi_value SetTest(napi_env env, napi_callback_info info) {
 }
 
 napi_value SetTestMany(napi_env env, napi_callback_info info) {
-  std::array<napi_value, 2> arguments;
-  if (!GetArguments(env, info, &arguments)) {
+  std::array<napi_value, 3> arguments;
+  if (!GetArgumentsWithOptional<2>(env, info, &arguments)) {
     return nullptr;
   }
 
   try {
     SetContext* context = nullptr;
-    if (!GetTaggedExternal(env, arguments[0], &kSetContextTypeTag, "Invalid RE2Set context",
-                           &context)) {
+    if (!GetTaggedExternal(env, arguments[0], &kSetContextTypeTag, "Invalid RE2Set context", &context)) {
       return nullptr;
     }
     const re2::RE2::Set& set = *context->set;
@@ -340,10 +326,14 @@ napi_value SetTestMany(napi_env env, napi_callback_info info) {
     if (!GetTexts(env, arguments[1], &texts, &total_bytes)) {
       return nullptr;
     }
+    size_t batch_size = 0;
+    if (!GetBatchSize(env, arguments[2], &batch_size)) {
+      return nullptr;
+    }
 
     std::vector<std::vector<int>> matches(texts.size());
     std::vector<re2::RE2::Set::ErrorKind> errors(texts.size(), re2::RE2::Set::kNoError);
-    ParallelFor(texts.size(), total_bytes, [&](size_t index) {
+    ParallelFor(texts.size(), total_bytes, batch_size, [&](size_t index) {
       re2::RE2::Set::ErrorInfo error_info{re2::RE2::Set::kNoError};
       const bool matched = set.Match(texts[index], &matches[index], &error_info);
       if (!matched) {
@@ -359,15 +349,13 @@ napi_value SetTestMany(napi_env env, napi_callback_info info) {
     }
 
     napi_value result;
-    if (!Check(env, napi_create_array_with_length(env, matches.size(), &result),
-               "Failed to create set batch result")) {
+    if (!Check(env, napi_create_array_with_length(env, matches.size(), &result), "Failed to create set batch result")) {
       return nullptr;
     }
     for (size_t index = 0; index < matches.size(); ++index) {
       napi_value match;
       if (!CreateSetMatchResult(env, matches[index], &match) ||
-          !Check(env, napi_set_element(env, result, index, match),
-                 "Failed to write set batch match")) {
+          !Check(env, napi_set_element(env, result, index, match), "Failed to write set batch match")) {
         return nullptr;
       }
     }
@@ -381,16 +369,13 @@ napi_value SetTestMany(napi_env env, napi_callback_info info) {
 bool SetNumberProperty(napi_env env, napi_value object, const char* name, double number) {
   napi_value value;
   return Check(env, napi_create_double(env, number, &value), "Failed to create cache statistic") &&
-         Check(env, napi_set_named_property(env, object, name, value),
-               "Failed to write cache statistic");
+         Check(env, napi_set_named_property(env, object, name, value), "Failed to write cache statistic");
 }
 
 bool SetBigIntProperty(napi_env env, napi_value object, const char* name, uint64_t number) {
   napi_value value;
-  return Check(env, napi_create_bigint_uint64(env, number, &value),
-               "Failed to create cache statistic") &&
-         Check(env, napi_set_named_property(env, object, name, value),
-               "Failed to write cache statistic");
+  return Check(env, napi_create_bigint_uint64(env, number, &value), "Failed to create cache statistic") &&
+         Check(env, napi_set_named_property(env, object, name, value), "Failed to write cache statistic");
 }
 
 napi_value SetCompileCacheStats(napi_env env, napi_callback_info) {

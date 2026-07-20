@@ -8,6 +8,7 @@ import { RE2, RE2Set } from '@nxtedition/re2'
 const expression = new RE2('foo')
 expression.test(Buffer.from('before foo after')) // true
 expression.testMany([Buffer.from('foo'), Buffer.from('bar')]) // [true, false]
+expression.testMany([Buffer.from('foo'), Buffer.from('bar')], { batchSize: Infinity }) // caller thread only
 
 const expressions = new RE2Set(['foo', 'bar'])
 expressions.test(Buffer.from('bar')) // [1]
@@ -17,7 +18,9 @@ const asyncExpressions = await RE2Set.compileAsync(['foo', 'bar'])
 asyncExpressions.test(Buffer.from('foo')) // [0]
 ```
 
-Patterns may be strings, Buffers, TypedArrays, or DataViews. Input must be a Buffer, TypedArray, or DataView. SharedArrayBuffer-backed views are supported, but their bytes must not be mutated concurrently while a native call reads them. Both APIs operate on bytes; optional `byteOffset` and `byteLength` values select the input range. Negative values clamp to zero, values past the view clamp to its bounds, and fractional values are truncated. `testMany()` accepts up to 1,048,576 binary inputs. The published Linux x64 prebuild uses a process-wide pool when a batch contains enough input bytes to amortize dispatch. It selects at most half of the container-affinity CPUs, including the caller, so matching leaves capacity for other work. Helpers block when idle and the pool shuts down after the last Node.js environment; source builds and other platforms match the batch sequentially.
+Patterns may be strings, Buffers, TypedArrays, or DataViews. Input must be a Buffer, TypedArray, or DataView. SharedArrayBuffer-backed views are supported, but their bytes must not be mutated concurrently while a native call reads them. Both APIs operate on bytes; optional `byteOffset` and `byteLength` values select the input range. Negative values clamp to zero, values past the view clamp to its bounds, and fractional values are truncated. `testMany()` accepts up to 1,048,576 binary inputs. Its optional `batchSize` is the number of inputs per native scheduling chunk; `Infinity` or a value greater than or equal to the input count executes on the caller thread without waking the pool. Omitting it keeps automatic scheduling at about 16 chunks per participating thread.
+
+The published Linux x64 prebuild uses a process-wide pool when a batch contains enough input bytes to amortize dispatch. It selects at most half of the container-affinity CPUs, including the caller, so matching leaves capacity for other work. Helpers block when idle and the pool shuts down after the last Node.js environment; source builds and other platforms match the batch sequentially regardless of `batchSize`.
 
 Invalid RE2 syntax throws during synchronous construction and rejects `RE2Set.compileAsync()`. A pattern is limited to 16 MiB; a set accepts at most 100,000 patterns and 16 MiB of aggregate pattern bytes. The asynchronous API snapshots pattern bytes before returning, compiles on the Node.js worker pool, and resolves to a normal `RE2Set`.
 
@@ -25,7 +28,7 @@ Async compilations are cached by the complete ordered pattern bytes. Concurrent 
 
 ## Benchmark
 
-Run `npm run benchmark` to compare scalar matching with `testMany()`, report the scheduler-selected thread count and cold-pool latency, and measure admission plus total settlement time for cold, cached, and deduplicated `compileAsync()` calls. Use `npm run benchmark:prebuild` to force the packaged prebuild. Batch size, input bytes, iterations, set size, and warmups can be configured with command-line options; run `node benchmark.js --help` for details.
+Run `npm run benchmark` to compare scalar and single-threaded matching with the fastest scheduling batch size from a bounded sweep, report the selected batch/thread count and cold-pool latency, and measure admission plus total settlement time for cold, cached, and deduplicated `compileAsync()` calls. Use `npm run benchmark:prebuild` to force the packaged prebuild. Input count, input bytes, iterations, set size, and warmups can be configured with command-line options; run `node benchmark.js --help` for details.
 
 ## Prebuilds
 

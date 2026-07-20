@@ -45,10 +45,9 @@ ThreadPool::~ThreadPool() {
   Stop();
 }
 
-void ThreadPool::Run(size_t thread_count, size_t work_count, const void* context,
-                     Callback callback) {
-  if (thread_count < 2 || thread_count > workers_.size() + 1 || work_count == 0 ||
-      context == nullptr || callback == nullptr) {
+void ThreadPool::Run(size_t thread_count, size_t work_count, const void* context, Callback callback) {
+  if (thread_count < 2 || thread_count > workers_.size() + 1 || work_count == 0 || context == nullptr ||
+      callback == nullptr) {
     throw std::invalid_argument("Invalid batch thread-pool work");
   }
 
@@ -61,8 +60,7 @@ void ThreadPool::Run(size_t thread_count, size_t work_count, const void* context
 
   const uint64_t previous_state = job_state_.load(std::memory_order_relaxed);
   const uint64_t next_state =
-      ((previous_state & ~kActiveWorkerMask) + kGenerationIncrement) |
-      static_cast<uint64_t>(thread_count - 1);
+      ((previous_state & ~kActiveWorkerMask) + kGenerationIncrement) | static_cast<uint64_t>(thread_count - 1);
   job_state_.store(next_state, std::memory_order_release);
   job_state_.notify_all();
   ProcessWork();

@@ -11,8 +11,7 @@
 namespace node_re2 {
 
 struct SetCompilation {
-  explicit SetCompilation(std::string encoded_patterns)
-      : encoded_patterns(std::move(encoded_patterns)) {}
+  explicit SetCompilation(std::string encoded_patterns) : encoded_patterns(std::move(encoded_patterns)) {}
 
   std::condition_variable ready;
   std::string encoded_patterns;
@@ -49,9 +48,8 @@ SetCompileCache& GetSetCompileCache() {
 }
 
 SharedSet FindCachedSetLocked(SetCompileCache& cache, const std::string& key) {
-  const auto reverse_entry = std::find_if(
-      cache.entries.rbegin(), cache.entries.rend(),
-      [&key](const CachedSet& entry) { return entry.encoded_patterns == key; });
+  const auto reverse_entry = std::find_if(cache.entries.rbegin(), cache.entries.rend(),
+                                          [&key](const CachedSet& entry) { return entry.encoded_patterns == key; });
   if (reverse_entry == cache.entries.rend()) {
     return nullptr;
   }
@@ -65,9 +63,7 @@ SharedSet FindCachedSetLocked(SetCompileCache& cache, const std::string& key) {
 
 auto FindPendingLocked(SetCompileCache& cache, const std::string& key) {
   return std::find_if(cache.in_flight.begin(), cache.in_flight.end(),
-                      [&key](const PendingSetCompilation& pending) {
-                        return pending->encoded_patterns == key;
-                      });
+                      [&key](const PendingSetCompilation& pending) { return pending->encoded_patterns == key; });
 }
 
 void ErasePendingLocked(SetCompileCache& cache, const PendingSetCompilation& pending) {
@@ -117,8 +113,7 @@ SharedSet CompileEncodedSet(std::string_view encoded_patterns, std::string* erro
           }
           uint64_t pattern_size = 0;
           for (size_t byte = 0; byte < sizeof(pattern_size); ++byte) {
-            pattern_size |= static_cast<uint64_t>(
-                                static_cast<unsigned char>(encoded_patterns[offset + byte]))
+            pattern_size |= static_cast<uint64_t>(static_cast<unsigned char>(encoded_patterns[offset + byte]))
                             << (byte * 8);
           }
           offset += sizeof(pattern_size);
@@ -222,8 +217,7 @@ SharedSet CompileSet(const std::vector<std::string>& patterns, std::string* erro
       error);
 }
 
-SharedSet RunSetCompilation(const PendingSetCompilation& pending,
-                            bool* unexpected_failure) noexcept {
+SharedSet RunSetCompilation(const PendingSetCompilation& pending, bool* unexpected_failure) noexcept {
   SharedSet set;
   std::string error;
   std::list<CachedSet> evicted;
@@ -249,8 +243,7 @@ SharedSet RunSetCompilation(const PendingSetCompilation& pending,
           const size_t key_bytes = pending->encoded_patterns.size();
           cache.entries.push_back({std::move(pending->encoded_patterns), set});
           cache.key_bytes += key_bytes;
-          while (cache.entries.size() > kSetCompileCacheMaxSize ||
-                 cache.key_bytes > kSetCompileCacheMaxKeyBytes) {
+          while (cache.entries.size() > kSetCompileCacheMaxSize || cache.key_bytes > kSetCompileCacheMaxKeyBytes) {
             cache.key_bytes -= cache.entries.front().encoded_patterns.size();
             evicted.splice(evicted.end(), cache.entries, cache.entries.begin());
           }

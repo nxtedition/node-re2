@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer'
-import { RE2, RE2Set, type BinaryView } from '@nxtedition/re2'
+import { RE2, RE2Set, type BinaryView, type TestManyOptions } from '@nxtedition/re2'
 
 const buffer = Buffer.from('foo')
 const typedArray = new Uint8Array(buffer)
@@ -16,7 +16,10 @@ const asyncExpressions: RE2Set = await RE2Set.compileAsync([
 ] as const)
 const batchMatches: boolean[] = expression.testMany(views)
 const batchIndices: number[][] = expressions.testMany(views)
-void [batchMatches, batchIndices]
+const sequentialOptions = { batchSize: Infinity } satisfies TestManyOptions
+const sequentialMatches: boolean[] = expression.testMany(views, sequentialOptions)
+const chunkedIndices: number[][] = expressions.testMany(views, { batchSize: 16 })
+void [batchMatches, batchIndices, sequentialMatches, chunkedIndices]
 
 for (const view of views) {
   const matches: boolean = expression.test(view, 0, view.byteLength)
@@ -37,5 +40,9 @@ expression.testMany(['foo'])
 new RE2Set('foo')
 // @ts-expect-error testMany requires an array
 expressions.testMany(buffer)
+// @ts-expect-error batchSize must be numeric
+expression.testMany(views, { batchSize: '16' })
+// @ts-expect-error options are intentionally limited to scheduling batch size
+expressions.testMany(views, { concurrency: 2 })
 // @ts-expect-error RE2Set.compileAsync requires an array
 RE2Set.compileAsync('foo')

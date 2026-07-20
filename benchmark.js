@@ -8,8 +8,8 @@ import binding from './lib/binding.js'
 
 const { values } = parseArgs({
   options: {
-    'batch-size': { type: 'string', default: '4096' },
     help: { type: 'boolean', short: 'h' },
+    'input-count': { type: 'string', default: '4096' },
     'input-bytes': { type: 'string', default: '4096' },
     iterations: { type: 'string', default: '10' },
     'set-size': { type: 'string', default: '256' },
@@ -20,7 +20,7 @@ const { values } = parseArgs({
 if (values.help) {
   console.log(`Usage: node benchmark.js [options]
 
-  --batch-size <number>   inputs per matching run (default: 4096)
+  --input-count <number>  inputs per matching run (default: 4096)
   --input-bytes <number>  requested bytes per input (default: 4096)
   --iterations <number>   measured matching runs (default: 10)
   --set-size <number>     patterns in RE2Set (default: 256)
@@ -36,7 +36,7 @@ function positiveInteger(name, value) {
   return number
 }
 
-const batchSize = positiveInteger('--batch-size', values['batch-size'])
+const inputCount = positiveInteger('--input-count', values['input-count'])
 const inputBytes = positiveInteger('--input-bytes', values['input-bytes'])
 const iterations = positiveInteger('--iterations', values.iterations)
 const setSize = positiveInteger('--set-size', values['set-size'])
@@ -45,7 +45,7 @@ const warmup = positiveInteger('--warmup', values.warmup)
 const marker = index => `match-${String(index % setSize).padStart(6, '0')}`
 const paddingLength = Math.max(inputBytes - marker(setSize - 1).length, 0)
 const padding = 'x'.repeat(paddingLength)
-const setInputs = Array.from({ length: batchSize }, (_, index) =>
+const setInputs = Array.from({ length: inputCount }, (_, index) =>
   Buffer.from(
     index % 2 === 0
       ? `${padding}${marker(index)}`
@@ -54,7 +54,7 @@ const setInputs = Array.from({ length: batchSize }, (_, index) =>
 )
 const scanMatch = 'a1'.repeat(Math.ceil(inputBytes / 2)).slice(0, inputBytes)
 const scanMiss = 'a'.repeat(inputBytes)
-const scanInputs = Array.from({ length: batchSize }, (_, index) =>
+const scanInputs = Array.from({ length: inputCount }, (_, index) =>
   Buffer.from(index % 2 === 0 ? scanMatch : scanMiss)
 )
 const patterns = Array.from(
@@ -96,46 +96,103 @@ function median(numbers) {
   return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
 }
 
-function measure(run) {
+function measureInterleaved(runs) {
   for (let index = 0; index < warmup; ++index) {
-    consume(run())
+    for (let offset = 0; offset < runs.length; ++offset) {
+      consume(runs[(index + offset) % runs.length].run())
+    }
   }
 
-  const samples = []
+  const samples = new Map(runs.map(({ name }) => [name, []]))
   for (let index = 0; index < iterations; ++index) {
-    const start = performance.now()
-    const result = run()
-    samples.push(performance.now() - start)
-    consume(result)
+    for (let offset = 0; offset < runs.length; ++offset) {
+      const { name, run } = runs[(index + offset) % runs.length]
+      const start = performance.now()
+      const result = run()
+      samples.get(name).push(performance.now() - start)
+      consume(result)
+    }
   }
-  return median(samples)
+  return new Map([...samples].map(([name, values]) => [name, median(values)]))
+}
+
+function schedulingBatchSizes(inputs) {
+  const totalBytes = batchBytes(inputs)
+  const automaticThreads = binding.batch_parallelism(inputs.length, totalBytes)
+  if (automaticThreads < 2) {
+    return [Infinity]
+  }
+
+  const candidates = new Set()
+  for (let size = 1; size < inputs.length; size *= 2) {
+    candidates.add(size)
+  }
+  candidates.add(Math.max(Math.ceil(inputs.length / (automaticThreads * 16)), 1))
+  return [...candidates].sort((left, right) => left - right).concat(Infinity)
+}
+
+function benchmarkMatch(operation, inputs, scalar, batch) {
+  const totalBytes = batchBytes(inputs)
+  const candidates = schedulingBatchSizes(inputs)
+  const sweep = measureInterleaved(
+    candidates.map((batchSize, index) => ({
+      name: String(index),
+      run: () => batch(batchSize),
+    }))
+  )
+  let optimalBatchSize = candidates[0]
+  let optimalSweepMs = sweep.get('0')
+  for (let index = 1; index < candidates.length; ++index) {
+    const candidateMs = sweep.get(String(index))
+    if (candidateMs < optimalSweepMs) {
+      optimalBatchSize = candidates[index]
+      optimalSweepMs = candidateMs
+    }
+  }
+
+  const finalRuns = [
+    { name: 'scalar', run: scalar },
+    { name: 'single', run: () => batch(Infinity) },
+  ]
+  if (optimalBatchSize !== Infinity) {
+    finalRuns.push({ name: 'optimal', run: () => batch(optimalBatchSize) })
+  }
+  const final = measureInterleaved(finalRuns)
+  return {
+    operation,
+    batchSize: optimalBatchSize,
+    selectedThreads: binding.batch_parallelism(inputs.length, totalBytes, optimalBatchSize),
+    scalarMs: final.get('scalar'),
+    singleThreadMs: final.get('single'),
+    batchMs: optimalBatchSize === Infinity ? final.get('single') : final.get('optimal'),
+  }
 }
 
 const matchResults = [
-  {
-    operation: 'RE2 (literal suffix)',
-    selectedThreads: binding.batch_parallelism(setInputs.length, batchBytes(setInputs)),
-    scalarMs: measure(() => setInputs.map(input => literalRegex.test(input))),
-    batchMs: measure(() => literalRegex.testMany(setInputs)),
-  },
-  {
-    operation: 'RE2 (anchored early fail)',
-    selectedThreads: binding.batch_parallelism(scanInputs.length, batchBytes(scanInputs)),
-    scalarMs: measure(() => scanInputs.map(input => earlyFailRegex.test(input))),
-    batchMs: measure(() => earlyFailRegex.testMany(scanInputs)),
-  },
-  {
-    operation: 'RE2 (scan-heavy)',
-    selectedThreads: binding.batch_parallelism(scanInputs.length, batchBytes(scanInputs)),
-    scalarMs: measure(() => scanInputs.map(input => scanRegex.test(input))),
-    batchMs: measure(() => scanRegex.testMany(scanInputs)),
-  },
-  {
-    operation: 'RE2Set',
-    selectedThreads: binding.batch_parallelism(setInputs.length, batchBytes(setInputs)),
-    scalarMs: measure(() => setInputs.map(input => set.test(input))),
-    batchMs: measure(() => set.testMany(setInputs)),
-  },
+  benchmarkMatch(
+    'RE2 (literal suffix)',
+    setInputs,
+    () => setInputs.map(input => literalRegex.test(input)),
+    batchSize => literalRegex.testMany(setInputs, { batchSize })
+  ),
+  benchmarkMatch(
+    'RE2 (anchored early fail)',
+    scanInputs,
+    () => scanInputs.map(input => earlyFailRegex.test(input)),
+    batchSize => earlyFailRegex.testMany(scanInputs, { batchSize })
+  ),
+  benchmarkMatch(
+    'RE2 (scan-heavy)',
+    scanInputs,
+    () => scanInputs.map(input => scanRegex.test(input)),
+    batchSize => scanRegex.testMany(scanInputs, { batchSize })
+  ),
+  benchmarkMatch(
+    'RE2Set',
+    setInputs,
+    () => setInputs.map(input => set.test(input)),
+    batchSize => set.testMany(setInputs, { batchSize })
+  ),
 ]
 
 async function measureAsync(run) {
@@ -168,18 +225,23 @@ console.log(
   `Node ${process.version}, ${process.platform} ${process.arch}, ${os.cpus()[0]?.model ?? 'unknown CPU'}, ${os.availableParallelism()} available CPUs`
 )
 console.log(
-  `${batchSize.toLocaleString('en-US')} inputs x ${inputBytes.toLocaleString('en-US')} requested bytes, ${setSize.toLocaleString('en-US')} set patterns, median of ${iterations} runs after ${warmup} warmups`
+  `${inputCount.toLocaleString('en-US')} inputs x ${inputBytes.toLocaleString('en-US')} requested bytes, ${setSize.toLocaleString('en-US')} set patterns, median of ${iterations} runs after ${warmup} warmups`
 )
 console.log(
   `First scan-heavy testMany call: ${firstBatchMs.toFixed(2)} ms (${binding.batch_parallelism(scanInputs.length, batchBytes(scanInputs))} selected threads; pool cold when greater than one)`
 )
+console.log(
+  `Scheduling batch-size sweep: ${schedulingBatchSizes(scanInputs).map(size => (size === Infinity ? 'Infinity' : size)).join(', ')}`
+)
 console.log()
-console.log('| operation | selected threads | scalar loop | testMany | speedup | testMany throughput |')
-console.log('| --- | ---: | ---: | ---: | ---: | ---: |')
+console.log(
+  '| operation | optimal batch size | selected threads | scalar loop | 1-thread testMany | optimal testMany | vs scalar | vs 1-thread | throughput |'
+)
+console.log('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
 for (const result of matchResults) {
-  const throughput = (batchSize / result.batchMs) * 1_000
+  const throughput = (inputCount / result.batchMs) * 1_000
   console.log(
-    `| ${result.operation} | ${result.selectedThreads} | ${result.scalarMs.toFixed(2)} ms | ${result.batchMs.toFixed(2)} ms | ${(result.scalarMs / result.batchMs).toFixed(2)}x | ${Math.round(throughput).toLocaleString('en-US')} inputs/s |`
+    `| ${result.operation} | ${result.batchSize === Infinity ? 'Infinity' : result.batchSize} | ${result.selectedThreads} | ${result.scalarMs.toFixed(2)} ms | ${result.singleThreadMs.toFixed(2)} ms | ${result.batchMs.toFixed(2)} ms | ${(result.scalarMs / result.batchMs).toFixed(2)}x | ${(result.singleThreadMs / result.batchMs).toFixed(2)}x | ${Math.round(throughput).toLocaleString('en-US')} inputs/s |`
   )
 }
 console.log()

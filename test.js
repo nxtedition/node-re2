@@ -123,9 +123,21 @@ describe('RE2', () => {
       expression.testMany(inputs),
       inputs.map(input => expression.test(input))
     )
+    for (const batchSize of [1, 7, inputs.length, inputs.length + 1, Infinity]) {
+      assert.deepEqual(
+        expression.testMany(inputs, { batchSize }),
+        inputs.map(input => expression.test(input))
+      )
+    }
     assert.deepEqual(expression.testMany([]), [])
+    assert.deepEqual(expression.testMany([], { batchSize: Infinity }), [])
     assert.throws(() => expression.testMany('match-1'), TypeError)
     assert.throws(() => expression.testMany([Buffer.from('match-1'), 'match-2']), TypeError)
+    assert.throws(() => expression.testMany(inputs, null), TypeError)
+    assert.throws(() => expression.testMany(inputs, { batchSize: '1' }), TypeError)
+    for (const batchSize of [0, -1, 1.5, Number.NaN, Number.NEGATIVE_INFINITY, 2 ** 53]) {
+      assert.throws(() => expression.testMany(inputs, { batchSize }), RangeError)
+    }
     const oversizedInputs = []
     oversizedInputs.length = 2 ** 20 + 1
     assert.throws(() => expression.testMany(oversizedInputs), /Too many inputs/)
@@ -239,9 +251,18 @@ describe('RE2Set', () => {
       expressions.testMany(inputs).map(toSortedIndices),
       inputs.map(input => toSortedIndices(expressions.test(input)))
     )
+    for (const batchSize of [1, 11, inputs.length, inputs.length + 1, Infinity]) {
+      assert.deepEqual(
+        expressions.testMany(inputs, { batchSize }).map(toSortedIndices),
+        inputs.map(input => toSortedIndices(expressions.test(input)))
+      )
+    }
     assert.deepEqual(expressions.testMany([]), [])
+    assert.deepEqual(expressions.testMany([], { batchSize: Infinity }), [])
     assert.throws(() => expressions.testMany('foo-1'), TypeError)
     assert.throws(() => expressions.testMany([Buffer.from('foo-1'), 'bar-2']), TypeError)
+    assert.throws(() => expressions.testMany(inputs, 1), TypeError)
+    assert.throws(() => expressions.testMany(inputs, { batchSize: Symbol() }), TypeError)
     assert.deepEqual(
       expressions.testMany(new Proxy([Buffer.from('foo-2'), Buffer.from('bar-3')], {})).map(
         toSortedIndices

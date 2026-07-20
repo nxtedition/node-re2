@@ -12,16 +12,14 @@ namespace {
 struct EnvironmentRegistration {};
 
 void CleanupAddonEnvironment(void* data) {
-  std::unique_ptr<EnvironmentRegistration> registration(
-      static_cast<EnvironmentRegistration*>(data));
+  std::unique_ptr<EnvironmentRegistration> registration(static_cast<EnvironmentRegistration*>(data));
   ReleaseBatchThreadPoolEnvironment();
 }
 
 }  // namespace
 
 bool RegisterAddonEnvironment(napi_env env) {
-  auto registration = std::unique_ptr<EnvironmentRegistration>(
-      new (std::nothrow) EnvironmentRegistration());
+  auto registration = std::unique_ptr<EnvironmentRegistration>(new (std::nothrow) EnvironmentRegistration());
   if (registration == nullptr) {
     napi_throw_error(env, nullptr, "Failed to allocate native addon registration");
     return false;
@@ -31,8 +29,7 @@ bool RegisterAddonEnvironment(napi_env env) {
     return false;
   }
 
-  const napi_status status =
-      napi_add_env_cleanup_hook(env, CleanupAddonEnvironment, registration.get());
+  const napi_status status = napi_add_env_cleanup_hook(env, CleanupAddonEnvironment, registration.get());
   if (status == napi_ok) {
     registration.release();
     return true;

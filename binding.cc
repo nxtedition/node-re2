@@ -10,8 +10,8 @@
 namespace node_re2 {
 
 napi_value Initialize(napi_env env, napi_value exports) {
-  if (!RegisterAddonEnvironment(env) || !RegisterRegexBindings(env, exports) ||
-      !RegisterSetBindings(env, exports) || !RegisterBatchBindings(env, exports)) {
+  if (!RegisterAddonEnvironment(env) || !RegisterRegexBindings(env, exports) || !RegisterSetBindings(env, exports) ||
+      !RegisterBatchBindings(env, exports)) {
     return nullptr;
   }
   return exports;
@@ -19,4 +19,6 @@ napi_value Initialize(napi_env env, napi_value exports) {
 
 }  // namespace node_re2
 
-NAPI_MODULE_INIT() { return node_re2::Initialize(env, exports); }
+NAPI_MODULE_INIT() {
+  return node_re2::Initialize(env, exports);
+}

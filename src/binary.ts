@@ -1,6 +1,15 @@
 export type BinaryView = ArrayBufferView<ArrayBufferLike>
 export type Pattern = string | BinaryView
 
+export interface TestManyOptions {
+  /**
+   * Inputs per native scheduling chunk. A finite value must be a positive safe
+   * integer. Omit it for automatic scheduling. Infinity or a value at least as
+   * large as the input count executes sequentially on the caller thread.
+   */
+  readonly batchSize?: number
+}
+
 const MAX_BATCH_INPUT_COUNT = 2 ** 20
 const MAX_PATTERN_COUNT = 100_000
 
@@ -43,4 +52,28 @@ export function normalizeInputs(inputs: unknown): BinaryView[] {
     normalized[index] = inputs[index] as BinaryView
   }
   return normalized
+}
+
+export function normalizeBatchSize(options: TestManyOptions | undefined): number {
+  if (options === undefined) {
+    return 0
+  }
+  if (typeof options !== 'object' || options === null) {
+    throw new TypeError('options must be an object')
+  }
+
+  const { batchSize } = options
+  if (batchSize === undefined) {
+    return 0
+  }
+  if (batchSize === Number.POSITIVE_INFINITY) {
+    return batchSize
+  }
+  if (typeof batchSize !== 'number') {
+    throw new TypeError('batchSize must be a number')
+  }
+  if (!Number.isSafeInteger(batchSize) || batchSize <= 0) {
+    throw new RangeError('batchSize must be a positive safe integer or Infinity')
+  }
+  return batchSize
 }

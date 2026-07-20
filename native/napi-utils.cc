@@ -67,8 +67,7 @@ bool GetClampedIndex(napi_env env, napi_value value, size_t maximum, size_t* res
 
 bool GetString(napi_env env, napi_value value, size_t maximum, std::string* result) {
   size_t size = 0;
-  if (!Check(env, napi_get_value_string_utf8(env, value, nullptr, 0, &size),
-             "Failed to read pattern")) {
+  if (!Check(env, napi_get_value_string_utf8(env, value, nullptr, 0, &size), "Failed to read pattern")) {
     return false;
   }
   if (size > maximum) {
@@ -119,8 +118,7 @@ bool Check(napi_env env, napi_status status, const char* operation) {
 
   const napi_extended_error_info* info = nullptr;
   const char* message = operation;
-  if (napi_get_last_error_info(env, &info) == napi_ok && info != nullptr &&
-      info->error_message != nullptr) {
+  if (napi_get_last_error_info(env, &info) == napi_ok && info != nullptr && info->error_message != nullptr) {
     message = info->error_message;
   }
   napi_throw_error(env, nullptr, message);
@@ -131,8 +129,7 @@ bool ExportFunction(napi_env env, napi_value exports, const char* name, napi_cal
   napi_value function;
   return Check(env, napi_create_function(env, name, NAPI_AUTO_LENGTH, callback, nullptr, &function),
                "Failed to create native function") &&
-         Check(env, napi_set_named_property(env, exports, name, function),
-               "Failed to export native function");
+         Check(env, napi_set_named_property(env, exports, name, function), "Failed to export native function");
 }
 
 bool GetByteView(napi_env env, napi_value value, ByteView* view) {
@@ -150,8 +147,7 @@ bool GetByteView(napi_env env, napi_value value, ByteView* view) {
   }
 
   bool is_typed_array = false;
-  if (!Check(env, napi_is_typedarray(env, value, &is_typed_array),
-             "Failed to inspect binary input")) {
+  if (!Check(env, napi_is_typedarray(env, value, &is_typed_array), "Failed to inspect binary input")) {
     return false;
   }
   if (is_typed_array) {
@@ -160,8 +156,7 @@ bool GetByteView(napi_env env, napi_value value, ByteView* view) {
     void* data = nullptr;
     napi_value array_buffer;
     size_t byte_offset = 0;
-    if (!Check(env, napi_get_typedarray_info(env, value, &type, &length, &data, &array_buffer,
-                                             &byte_offset),
+    if (!Check(env, napi_get_typedarray_info(env, value, &type, &length, &data, &array_buffer, &byte_offset),
                "Failed to read TypedArray")) {
       return false;
     }
@@ -176,8 +171,7 @@ bool GetByteView(napi_env env, napi_value value, ByteView* view) {
   }
 
   bool is_data_view = false;
-  if (!Check(env, napi_is_dataview(env, value, &is_data_view),
-             "Failed to inspect binary input")) {
+  if (!Check(env, napi_is_dataview(env, value, &is_data_view), "Failed to inspect binary input")) {
     return false;
   }
   if (is_data_view) {
@@ -202,8 +196,7 @@ bool GetPattern(napi_env env, napi_value value, std::string* pattern, size_t max
   return GetPatternImpl(env, value, maximum, pattern);
 }
 
-bool GetText(napi_env env, napi_value input, napi_value offset_value, napi_value length_value,
-             std::string_view* text) {
+bool GetText(napi_env env, napi_value input, napi_value offset_value, napi_value length_value, std::string_view* text) {
   ByteView view;
   if (!GetByteView(env, input, &view)) {
     return false;
@@ -233,8 +226,7 @@ bool GetPatterns(napi_env env, napi_value value, std::vector<std::string>* patte
   }
 
   uint32_t pattern_count = 0;
-  if (!Check(env, napi_get_array_length(env, value, &pattern_count),
-             "Failed to read patterns")) {
+  if (!Check(env, napi_get_array_length(env, value, &pattern_count), "Failed to read patterns")) {
     return false;
   }
   if (pattern_count > kMaxSetPatternCount) {
@@ -246,8 +238,7 @@ bool GetPatterns(napi_env env, napi_value value, std::vector<std::string>* patte
   size_t total_bytes = 0;
   for (uint32_t index = 0; index < pattern_count; ++index) {
     napi_value pattern_value;
-    if (!Check(env, napi_get_element(env, value, index, &pattern_value),
-               "Failed to read pattern")) {
+    if (!Check(env, napi_get_element(env, value, index, &pattern_value), "Failed to read pattern")) {
       return false;
     }
     std::string pattern;
@@ -260,8 +251,7 @@ bool GetPatterns(napi_env env, napi_value value, std::vector<std::string>* patte
   return true;
 }
 
-bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* texts,
-              size_t* total_bytes) {
+bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* texts, size_t* total_bytes) {
   bool is_array = false;
   if (!Check(env, napi_is_array(env, value, &is_array), "Failed to inspect inputs")) {
     return false;
@@ -304,6 +294,43 @@ bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* tex
     *total_bytes += view.size;
     texts->emplace_back(view.data, view.size);
   }
+  return true;
+}
+
+bool GetBatchSize(napi_env env, napi_value value, size_t* batch_size) {
+  napi_valuetype type;
+  if (!Check(env, napi_typeof(env, value, &type), "Failed to inspect batchSize")) {
+    return false;
+  }
+  if (type == napi_undefined) {
+    *batch_size = 0;
+    return true;
+  }
+  if (type != napi_number) {
+    napi_throw_type_error(env, nullptr, "batchSize must be a number");
+    return false;
+  }
+
+  double number = 0;
+  const napi_status status = napi_get_value_double(env, value, &number);
+  if (status != napi_ok) {
+    if (status != napi_pending_exception) {
+      napi_throw_range_error(env, nullptr, "batchSize must be a positive safe integer or Infinity");
+    }
+    return false;
+  }
+
+  if (number == std::numeric_limits<double>::infinity()) {
+    *batch_size = std::numeric_limits<size_t>::max();
+    return true;
+  }
+  constexpr double kMaxSafeInteger = 9007199254740991.0;
+  if (!std::isfinite(number) || number < 0 || std::trunc(number) != number || number > kMaxSafeInteger ||
+      number > static_cast<double>(std::numeric_limits<size_t>::max())) {
+    napi_throw_range_error(env, nullptr, "batchSize must be a positive safe integer or Infinity");
+    return false;
+  }
+  *batch_size = static_cast<size_t>(number);
   return true;
 }
 

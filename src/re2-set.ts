@@ -2,10 +2,12 @@ import binding from './binding.js'
 import type { NativeContext } from './binding.js'
 import {
   asBinaryView,
+  normalizeBatchSize,
   normalizeInputs,
   normalizePatterns,
   type BinaryView,
   type Pattern,
+  type TestManyOptions,
 } from './binary.js'
 
 const kCompiledContext = Symbol('compiledContext')
@@ -52,8 +54,16 @@ export class RE2Set {
     return binding.set_test(this.#context, buffer, byteOffset, byteLength)
   }
 
-  /** Matches a batch of binary inputs. */
-  testMany(inputs: readonly BinaryView[]): number[][] {
-    return binding.set_test_many(this.#context, normalizeInputs(inputs))
+  /**
+   * Matches binary inputs, using automatic scheduling unless `batchSize` is
+   * provided. Infinity or a value at least as large as the input count runs on
+   * the caller thread.
+   */
+  testMany(inputs: readonly BinaryView[], options?: TestManyOptions): number[][] {
+    return binding.set_test_many(
+      this.#context,
+      normalizeInputs(inputs),
+      normalizeBatchSize(options)
+    )
   }
 }

@@ -47,11 +47,9 @@ template <typename Function>
 void RunOnBatchThreadPool(size_t thread_count, size_t work_count, Function&& function) {
   using FunctionType = std::remove_cvref_t<Function>;
   static_assert(noexcept(std::declval<const FunctionType&>()(size_t{})));
-  GetBatchThreadPool().Run(
-      thread_count, work_count, &function,
-      [](const void* context, size_t index) noexcept {
-        (*static_cast<const FunctionType*>(context))(index);
-      });
+  GetBatchThreadPool().Run(thread_count, work_count, &function, [](const void* context, size_t index) noexcept {
+    (*static_cast<const FunctionType*>(context))(index);
+  });
 }
 
 }  // namespace node_re2

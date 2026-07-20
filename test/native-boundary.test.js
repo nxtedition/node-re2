@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { availableParallelism } from 'node:os'
 import { test } from 'node:test'
 
+import { RE2, RE2Set } from '@nxtedition/re2'
 import binding from '../lib/binding.js'
 
 test('reports scheduler-selected batch threads', () => {
@@ -13,7 +14,52 @@ test('reports scheduler-selected batch threads', () => {
       ? Math.max(Math.floor(availableParallelism() / 2), 1)
       : 1
   assert.equal(binding.batch_parallelism(1_000_000, 1_000_000_000), expectedMaximum)
+  assert.equal(binding.batch_parallelism(128, 128 * 16_384, Infinity), 1)
+  assert.equal(binding.batch_parallelism(128, 128 * 16_384, 128), 1)
+  assert.equal(binding.batch_parallelism(128, 128 * 16_384, 256), 1)
+  assert.equal(
+    binding.batch_parallelism(128, 128 * 16_384, 64),
+    Math.min(expectedMaximum, 2)
+  )
 })
+
+const parallelInputCount = 257
+const parallelInputBytes = 16 * 1024
+const explicitParallelism = binding.batch_parallelism(
+  parallelInputCount,
+  parallelInputCount * parallelInputBytes,
+  7
+)
+
+test(
+  'explicit batch size preserves results across parallel chunk boundaries',
+  {
+    skip:
+      explicitParallelism < 2
+        ? 'parallel matching is only enabled in a Linux prebuild with at least two CPUs'
+        : false,
+  },
+  () => {
+    const suffixes = ['alpha', 'beta', 'gamma', 'miss']
+    const inputs = Array.from({ length: parallelInputCount }, (_, index) => {
+      const suffix = suffixes[index % suffixes.length]
+      const input = Buffer.alloc(parallelInputBytes, 'x')
+      input.write(suffix, input.length - suffix.length)
+      return input
+    })
+    const expression = new RE2('(alpha|gamma)$')
+    const expressions = new RE2Set(['alpha$', 'beta$', 'gamma$'])
+
+    assert.deepEqual(
+      expression.testMany(inputs, { batchSize: 7 }),
+      inputs.map(input => expression.test(input))
+    )
+    assert.deepEqual(
+      expressions.testMany(inputs, { batchSize: 7 }),
+      inputs.map(input => expressions.test(input))
+    )
+  }
+)
 
 test('rejects mismatched native contexts without terminating Node', () => {
   const bindingUrl = new URL('../lib/binding.js', import.meta.url).href

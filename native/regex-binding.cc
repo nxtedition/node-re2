@@ -16,8 +16,7 @@
 namespace node_re2 {
 namespace {
 
-constexpr napi_type_tag kRegexContextTypeTag{UINT64_C(0x5df26165742c4fb1),
-                                             UINT64_C(0x986d1676ad8e7540)};
+constexpr napi_type_tag kRegexContextTypeTag{UINT64_C(0x5df26165742c4fb1), UINT64_C(0x986d1676ad8e7540)};
 
 napi_value RegexInit(napi_env env, napi_callback_info info) {
   std::array<napi_value, 1> arguments;
@@ -40,8 +39,7 @@ napi_value RegexInit(napi_env env, napi_callback_info info) {
     }
 
     napi_value result;
-    return CreateTaggedExternal(env, std::move(regex), &kRegexContextTypeTag, &result) ? result
-                                                                                       : nullptr;
+    return CreateTaggedExternal(env, std::move(regex), &kRegexContextTypeTag, &result) ? result : nullptr;
   } catch (const std::exception& error) {
     napi_throw_error(env, nullptr, error.what());
     return nullptr;
@@ -56,8 +54,7 @@ napi_value RegexTest(napi_env env, napi_callback_info info) {
 
   try {
     re2::RE2* regex = nullptr;
-    if (!GetTaggedExternal(env, arguments[0], &kRegexContextTypeTag, "Invalid RE2 context",
-                           &regex)) {
+    if (!GetTaggedExternal(env, arguments[0], &kRegexContextTypeTag, "Invalid RE2 context", &regex)) {
       return nullptr;
     }
 
@@ -79,15 +76,14 @@ napi_value RegexTest(napi_env env, napi_callback_info info) {
 }
 
 napi_value RegexTestMany(napi_env env, napi_callback_info info) {
-  std::array<napi_value, 2> arguments;
-  if (!GetArguments(env, info, &arguments)) {
+  std::array<napi_value, 3> arguments;
+  if (!GetArgumentsWithOptional<2>(env, info, &arguments)) {
     return nullptr;
   }
 
   try {
     re2::RE2* regex = nullptr;
-    if (!GetTaggedExternal(env, arguments[0], &kRegexContextTypeTag, "Invalid RE2 context",
-                           &regex)) {
+    if (!GetTaggedExternal(env, arguments[0], &kRegexContextTypeTag, "Invalid RE2 context", &regex)) {
       return nullptr;
     }
 
@@ -96,11 +92,14 @@ napi_value RegexTestMany(napi_env env, napi_callback_info info) {
     if (!GetTexts(env, arguments[1], &texts, &total_bytes)) {
       return nullptr;
     }
+    size_t batch_size = 0;
+    if (!GetBatchSize(env, arguments[2], &batch_size)) {
+      return nullptr;
+    }
 
     std::vector<uint8_t> matches(texts.size());
-    ParallelFor(texts.size(), total_bytes, [&](size_t index) {
-      matches[index] = re2::RE2::PartialMatch(texts[index], *regex);
-    });
+    ParallelFor(texts.size(), total_bytes, batch_size,
+                [&](size_t index) { matches[index] = re2::RE2::PartialMatch(texts[index], *regex); });
 
     napi_value result;
     if (!Check(env, napi_create_array_with_length(env, matches.size(), &result),
@@ -109,10 +108,8 @@ napi_value RegexTestMany(napi_env env, napi_callback_info info) {
     }
     for (size_t index = 0; index < matches.size(); ++index) {
       napi_value match;
-      if (!Check(env, napi_get_boolean(env, matches[index] != 0, &match),
-                 "Failed to create regex batch match") ||
-          !Check(env, napi_set_element(env, result, index, match),
-                 "Failed to write regex batch match")) {
+      if (!Check(env, napi_get_boolean(env, matches[index] != 0, &match), "Failed to create regex batch match") ||
+          !Check(env, napi_set_element(env, result, index, match), "Failed to write regex batch match")) {
         return nullptr;
       }
     }

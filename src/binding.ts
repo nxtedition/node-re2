@@ -14,7 +14,7 @@ export interface SetCompileCacheStats {
 }
 
 interface NativeBinding {
-  batch_parallelism(inputCount: number, totalBytes: number): number
+  batch_parallelism(inputCount: number, totalBytes: number, batchSize?: number): number
   regex_init(pattern: Pattern): NativeContext
   regex_test(
     context: NativeContext,
@@ -24,7 +24,8 @@ interface NativeBinding {
   ): boolean
   regex_test_many(
     context: NativeContext,
-    inputs: readonly BinaryView[]
+    inputs: readonly BinaryView[],
+    batchSize?: number
   ): boolean[]
   set_init(patterns: readonly Pattern[]): NativeContext
   set_compile_async(patterns: readonly Pattern[]): Promise<NativeContext>
@@ -37,7 +38,8 @@ interface NativeBinding {
   ): number[]
   set_test_many(
     context: NativeContext,
-    inputs: readonly BinaryView[]
+    inputs: readonly BinaryView[],
+    batchSize?: number
   ): number[][]
 }
 
