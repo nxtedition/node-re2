@@ -218,16 +218,16 @@ describe('RE2Set', () => {
     assert.deepEqual(secondExpressions.test(Buffer.from('cache')), [1])
 
     const afterConcurrent = compileStats()
-    assert.equal(afterConcurrent.compilations, before.compilations + 1)
+    assert.equal(afterConcurrent.compilations, before.compilations + 1n)
     assert.ok(
       afterConcurrent.cacheHits + afterConcurrent.deduplications >=
-        before.cacheHits + before.deduplications + 1
+        before.cacheHits + before.deduplications + 1n
     )
 
     await RE2Set.compileAsync(patterns)
     const afterCached = compileStats()
     assert.equal(afterCached.compilations, afterConcurrent.compilations)
-    assert.equal(afterCached.cacheHits, afterConcurrent.cacheHits + 1)
+    assert.equal(afterCached.cacheHits, afterConcurrent.cacheHits + 1n)
   })
 
   test('bounds the completed compile cache', async () => {
@@ -238,7 +238,7 @@ describe('RE2Set', () => {
 
     const beforeRetry = compileStats()
     await RE2Set.compileAsync(['^async-eviction-0$'])
-    assert.equal(compileStats().compilations, beforeRetry.compilations + 1)
+    assert.equal(compileStats().compilations, beforeRetry.compilations + 1n)
     assert.deepEqual(retained.test(Buffer.from('async-eviction-0')), [0])
   })
 
@@ -249,7 +249,7 @@ describe('RE2Set', () => {
 
     const second = RE2Set.compileAsync(['async-invalid', '('])
     await assert.rejects(second, Error)
-    assert.equal(compileStats().compilations, before.compilations + 2)
+    assert.equal(compileStats().compilations, before.compilations + 2n)
   })
 
   test('validates compileAsync input synchronously', () => {
@@ -291,10 +291,10 @@ describe('RE2Set', () => {
 
     assert.deepEqual(await Promise.all(results), Array(workerCount).fill('ok'))
     const after = compileStats()
-    assert.equal(after.compilations, before.compilations + 1)
+    assert.equal(after.compilations, before.compilations + 1n)
     assert.ok(
       after.cacheHits + after.deduplications >=
-        before.cacheHits + before.deduplications + workerCount * 2 - 1
+        before.cacheHits + before.deduplications + BigInt(workerCount * 2 - 1)
     )
   })
 

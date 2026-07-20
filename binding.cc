@@ -923,6 +923,12 @@ bool SetNumberProperty(napi_env env, napi_value object, const char* name, double
          Check(env, napi_set_named_property(env, object, name, value), "Failed to write cache statistic");
 }
 
+bool SetBigIntProperty(napi_env env, napi_value object, const char* name, uint64_t number) {
+  napi_value value;
+  return Check(env, napi_create_bigint_uint64(env, number, &value), "Failed to create cache statistic") &&
+         Check(env, napi_set_named_property(env, object, name, value), "Failed to write cache statistic");
+}
+
 napi_value SetCompileCacheStats(napi_env env, napi_callback_info) {
   try {
     uint64_t compilations = 0;
@@ -942,9 +948,9 @@ napi_value SetCompileCacheStats(napi_env env, napi_callback_info) {
 
     napi_value result;
     if (!Check(env, napi_create_object(env, &result), "Failed to create cache statistics") ||
-        !SetNumberProperty(env, result, "compilations", compilations) ||
-        !SetNumberProperty(env, result, "cacheHits", cache_hits) ||
-        !SetNumberProperty(env, result, "deduplications", deduplications) ||
+        !SetBigIntProperty(env, result, "compilations", compilations) ||
+        !SetBigIntProperty(env, result, "cacheHits", cache_hits) ||
+        !SetBigIntProperty(env, result, "deduplications", deduplications) ||
         !SetNumberProperty(env, result, "size", size) || !SetNumberProperty(env, result, "inFlight", in_flight)) {
       return nullptr;
     }
