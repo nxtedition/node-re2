@@ -14,10 +14,14 @@ RUN npm ci --ignore-scripts
 COPY . .
 
 ARG JOBS=8
-# Match the deployment RocksDB build: the shipped x64 binary targets Zen 3,
-# enabling AVX2 while local source builds remain portable by leaving this unset.
+
+# Linux prebuilds target AMD Zen 3 by default. build.sh forwards an explicitly
+# set RE2_LEVEL_MARCH so private builds can select another CPU or use an empty
+# value for a portable x86-64 artifact.
+ARG RE2_LEVEL_MARCH=znver3
+
 RUN npm run build:ts && \
-  NODE_RE2_OPENMP=1 NODE_RE2_MARCH=znver3 JOBS=$JOBS npx prebuildify \
+  RE2_LEVEL_MARCH="$RE2_LEVEL_MARCH" NODE_RE2_OPENMP=1 JOBS=$JOBS npx prebuildify \
   -t "$(node -p process.versions.node)" \
   --napi \
   --strip \

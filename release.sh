@@ -50,9 +50,8 @@ if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
 fi
 
 # Public artifacts must not inherit local compiler flags or gyp overrides.
-# Linux is isolated by Docker; the Darwin helper sanitizes the remaining
-# compiler and prebuildify environment at its build boundary.
-export NODE_RE2_MARCH=
+# With no override, build.sh uses the Dockerfile's audited Zen 3 default.
+unset RE2_LEVEL_MARCH
 export NODE_RE2_OPENMP=0
 unset CFLAGS CPPFLAGS CXXFLAGS LDFLAGS GYP_DEFINES
 
@@ -60,6 +59,7 @@ echo "Building linux-x64 prebuild (Docker)..."
 ./build.sh
 
 echo "Building darwin-arm64 prebuild (Node $NODE_TARGET)..."
+export RE2_LEVEL_MARCH=
 JOBS=${JOBS:-8} ./scripts/build-darwin-prebuild.sh "$NODE_TARGET"
 
 echo "Building TypeScript package outputs..."

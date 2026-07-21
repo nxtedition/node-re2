@@ -1,6 +1,6 @@
 {
   "variables": {
-    "node_re2_march%": "<!(node -p \"process.env.NODE_RE2_MARCH || ''\")",
+    "re2_level_march%": "<!(node -p \"process.env.RE2_LEVEL_MARCH || ''\")",
     "node_re2_openmp%": "<!(node -p \"process.env.NODE_RE2_OPENMP === '1' ? '1' : '0'\")"
   },
   "targets": [
@@ -183,14 +183,14 @@
                 "-fopenmp"
               ]
             }],
-            ["target_arch==\"x64\" and node_re2_march!=\"\"", {
+            ["target_arch==\"x64\" and re2_level_march!=\"\"", {
               "cflags": [
-                "-march=<(node_re2_march)",
-                "-mtune=<(node_re2_march)"
+                "-march=<(re2_level_march)",
+                "-mtune=<(re2_level_march)"
               ],
               "cflags_cc": [
-                "-march=<(node_re2_march)",
-                "-mtune=<(node_re2_march)"
+                "-march=<(re2_level_march)",
+                "-mtune=<(re2_level_march)"
               ]
             }]
           ]

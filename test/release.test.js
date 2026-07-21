@@ -48,16 +48,100 @@ test('release builds and validates prebuilds before versioning or publishing', (
 test('only the Linux prebuild enables dynamic GNU OpenMP', () => {
   const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8')
   const binding = readFileSync(new URL('../binding.gyp', import.meta.url), 'utf8')
+  const build = readFileSync(new URL('../build.sh', import.meta.url), 'utf8')
   const darwin = readFileSync(
     new URL('../scripts/build-darwin-prebuild.sh', import.meta.url),
     'utf8'
   )
 
-  assert.match(dockerfile, /NODE_RE2_OPENMP=1 NODE_RE2_MARCH=znver3/)
+  assert.match(dockerfile, /^ARG RE2_LEVEL_MARCH=znver3$/m)
+  assert.match(dockerfile, /RE2_LEVEL_MARCH="\$RE2_LEVEL_MARCH" NODE_RE2_OPENMP=1/)
   assert.match(dockerfile, /ldd .* \| grep -E 'libgomp\[\.\]so\[\.\]1 => \/'/)
+  assert.match(binding, /re2_level_march%.*RE2_LEVEL_MARCH/)
+  assert.ok(binding.includes('re2_level_march!=\\"\\"'))
+  assert.ok(binding.includes('-march=<(re2_level_march)'))
   assert.match(binding, /node_re2_openmp%.*NODE_RE2_OPENMP === '1'/)
   assert.match(binding, /node_re2_openmp==1.*-fopenmp/s)
+  assert.match(build, /\[ "\$\{RE2_LEVEL_MARCH\+x\}" = x \]/)
   assert.match(darwin, /NODE_RE2_OPENMP=0/)
+  assert.doesNotMatch(`${dockerfile}\n${binding}\n${build}\n${darwin}`, /NODE_RE2_MARCH/)
+})
+
+test('release uses Zen 3 for Linux and portable tuning for Darwin', () => {
+  const release = readFileSync(new URL('../release.sh', import.meta.url), 'utf8')
+  const useLinuxDefault = release.indexOf('unset RE2_LEVEL_MARCH')
+  const linux = release.indexOf('./build.sh', useLinuxDefault)
+  const clearTuning = release.indexOf('export RE2_LEVEL_MARCH=', linux)
+  const darwin = release.indexOf('./scripts/build-darwin-prebuild.sh', clearTuning)
+
+  assert.ok(useLinuxDefault >= 0)
+  assert.ok(linux > useLinuxDefault)
+  assert.ok(clearTuning > linux)
+  assert.ok(darwin > clearTuning)
+  assert.equal((release.match(/^export RE2_LEVEL_MARCH=$/gm) ?? []).length, 1)
+  assert.doesNotMatch(release, /NODE_RE2_MARCH/)
+})
+
+function runLinuxBuild(march) {
+  const root = mkdtempSync(path.join(tmpdir(), 'node-re2-linux-build-'))
+  mkdirSync(path.join(root, 'bin'))
+  mkdirSync(path.join(root, 'vendor/abseil-cpp/.git'), { recursive: true })
+  mkdirSync(path.join(root, 'vendor/re2/.git'), { recursive: true })
+  cpSync(new URL('../build.sh', import.meta.url), path.join(root, 'build.sh'))
+
+  const log = path.join(root, 'docker.log')
+  writeFileSync(
+    path.join(root, 'bin/docker'),
+    `#!/bin/sh
+printf '%s\\n' "$@" > "$DOCKER_LOG"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then
+    shift
+    output=\${1#type=local,dest=}
+  fi
+  shift
+done
+mkdir -p "$output"
+: > "$output/@nxtedition+re2.glibc.node"
+`,
+    { mode: 0o755 }
+  )
+
+  const env = {
+    ...process.env,
+    DOCKER_LOG: log,
+    PATH: `${path.join(root, 'bin')}:${process.env.PATH}`,
+  }
+  if (march === undefined) {
+    delete env.RE2_LEVEL_MARCH
+  } else {
+    env.RE2_LEVEL_MARCH = march
+  }
+
+  const result = spawnSync(process.env.BASH ?? 'bash', ['build.sh'], {
+    cwd: root,
+    env,
+    encoding: 'utf8',
+  })
+
+  try {
+    assert.equal(result.status, 0, result.stderr)
+    return readFileSync(log, 'utf8').split('\n')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+test('Linux build preserves explicit CPU tuning overrides, including portable builds', () => {
+  const defaults = runLinuxBuild(undefined)
+  assert.equal(defaults.includes('RE2_LEVEL_MARCH=znver2'), false)
+  assert.equal(defaults.includes('RE2_LEVEL_MARCH='), false)
+
+  for (const march of ['znver2', '']) {
+    const args = runLinuxBuild(march)
+    assert.ok(args.includes('--build-arg'))
+    assert.ok(args.includes(`RE2_LEVEL_MARCH=${march}`))
+  }
 })
 
 test('Darwin release prebuild is staged, tested, and installed transactionally', () => {

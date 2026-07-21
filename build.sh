@@ -87,6 +87,11 @@ DOCKER_ARGS=(--platform "$PLATFORM")
 if [ -n "${JOBS:-}" ]; then
   DOCKER_ARGS+=(--build-arg "JOBS=$JOBS")
 fi
+# The Dockerfile defaults to znver3. Preserve an explicitly set override,
+# including an empty value for a portable x86-64 artifact.
+if [ "${RE2_LEVEL_MARCH+x}" = x ]; then
+  DOCKER_ARGS+=(--build-arg "RE2_LEVEL_MARCH=$RE2_LEVEL_MARCH")
+fi
 
 DOCKER_BUILDKIT=1 docker build \
   "${DOCKER_ARGS[@]}" \
