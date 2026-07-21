@@ -35,9 +35,11 @@ napi_status ReleaseAsyncBatch(napi_env env, AsyncBatch* batch) {
   if (batch->borrowed_inputs == nullptr) {
     return napi_ok;
   }
-  const napi_ref reference = batch->borrowed_inputs;
-  batch->borrowed_inputs = nullptr;
-  return napi_delete_reference(env, reference);
+  const napi_status status = napi_delete_reference(env, batch->borrowed_inputs);
+  if (status == napi_ok) {
+    batch->borrowed_inputs = nullptr;
+  }
+  return status;
 }
 
 }  // namespace node_re2
