@@ -399,7 +399,7 @@ void SetTestManyComplete(napi_env env, napi_status status, void* data) {
     return;
   }
   if (status != napi_ok) {
-    RejectDeferred(env, work->deferred, "RE2Set batch matching was cancelled");
+    RejectDeferred(env, work->deferred, "RE2Set batch matching did not complete");
     return;
   }
   if (release_status != napi_ok) {
