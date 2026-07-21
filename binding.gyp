@@ -1,19 +1,19 @@
 {
   "variables": {
-    "node_re2_march%": "<!(node -p \"process.env.NODE_RE2_MARCH || ''\")"
+    "node_re2_march%": "<!(node -p \"process.env.NODE_RE2_MARCH || ''\")",
+    "node_re2_openmp%": "<!(node -p \"process.env.NODE_RE2_OPENMP === '1' ? '1' : '0'\")"
   },
   "targets": [
     {
       "target_name": "binding",
       "sources": [
         "binding.cc",
-        "native/addon-lifecycle.cc",
+        "native/async-batch.cc",
         "native/batch-binding.cc",
         "native/napi-utils.cc",
         "native/regex-binding.cc",
         "native/set-binding.cc",
         "native/set-cache.cc",
-        "native/thread-pool.cc",
         "vendor/re2/re2/bitmap256.cc",
         "vendor/re2/re2/bitstate.cc",
         "vendor/re2/re2/compile.cc",
@@ -169,6 +169,20 @@
             "-pthread"
           ],
           "conditions": [
+            ["node_re2_openmp==1", {
+              "defines": [
+                "NODE_RE2_OPENMP=1"
+              ],
+              "cflags": [
+                "-fopenmp"
+              ],
+              "cflags_cc": [
+                "-fopenmp"
+              ],
+              "ldflags": [
+                "-fopenmp"
+              ]
+            }],
             ["target_arch==\"x64\" and node_re2_march!=\"\"", {
               "cflags": [
                 "-march=<(node_re2_march)",

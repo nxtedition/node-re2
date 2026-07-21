@@ -6,23 +6,27 @@
 #include <exception>
 
 #include "batch-plan.h"
-#include "thread-pool.h"
+#include "openmp-runtime.h"
 
 namespace node_re2 {
 
 template <typename Function>
 void ParallelFor(size_t size, size_t total_bytes, size_t requested_batch_size, Function&& function) {
   const BatchPlan plan = MakeBatchPlan(size, total_bytes, requested_batch_size);
-#ifdef NODE_RE2_PARALLEL
+#ifdef NODE_RE2_OPENMP
   if (plan.thread_count > 1) {
+    std::lock_guard submission_lock(OpenMpSubmissionMutex());
     std::atomic<bool> stopped{false};
     std::exception_ptr error;
-    const auto run_batch = [&](size_t batch) noexcept {
+    const std::ptrdiff_t work_count = static_cast<std::ptrdiff_t>(plan.work_count);
+
+#pragma omp parallel for schedule(dynamic, 1) num_threads(plan.thread_count)
+    for (std::ptrdiff_t batch = 0; batch < work_count; ++batch) {
       if (stopped.load(std::memory_order_relaxed)) {
-        return;
+        continue;
       }
       try {
-        const size_t begin = batch * plan.batch_size;
+        const size_t begin = static_cast<size_t>(batch) * plan.batch_size;
         const size_t end = begin + std::min(plan.batch_size, size - begin);
         for (size_t index = begin; index < end; ++index) {
           function(index);
@@ -32,9 +36,8 @@ void ParallelFor(size_t size, size_t total_bytes, size_t requested_batch_size, F
           error = std::current_exception();
         }
       }
-    };
+    }
 
-    RunOnBatchThreadPool(plan.thread_count, plan.work_count, run_batch);
     if (error != nullptr) {
       std::rethrow_exception(error);
     }

@@ -2,7 +2,6 @@
 
 #include <node_api.h>
 
-#include "native/addon-lifecycle.h"
 #include "native/batch-binding.h"
 #include "native/regex-binding.h"
 #include "native/set-binding.h"
@@ -10,7 +9,7 @@
 namespace node_re2 {
 
 napi_value Initialize(napi_env env, napi_value exports) {
-  if (!RegisterAddonEnvironment(env) || !RegisterRegexBindings(env, exports) || !RegisterSetBindings(env, exports) ||
+  if (!RegisterRegexBindings(env, exports) || !RegisterSetBindings(env, exports) ||
       !RegisterBatchBindings(env, exports)) {
     return nullptr;
   }

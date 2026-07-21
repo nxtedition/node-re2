@@ -41,7 +41,23 @@ test('release builds and validates prebuilds before versioning or publishing', (
   assert.match(release, /--access public/)
   assert.match(release, /--dry-run=false/)
   assert.match(release, /--tag latest/)
+  assert.match(release, /export NODE_RE2_OPENMP=0/)
   assert.doesNotMatch(release, /git push --tags/)
+})
+
+test('only the Linux prebuild enables dynamic GNU OpenMP', () => {
+  const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8')
+  const binding = readFileSync(new URL('../binding.gyp', import.meta.url), 'utf8')
+  const darwin = readFileSync(
+    new URL('../scripts/build-darwin-prebuild.sh', import.meta.url),
+    'utf8'
+  )
+
+  assert.match(dockerfile, /NODE_RE2_OPENMP=1 NODE_RE2_MARCH=znver3/)
+  assert.match(dockerfile, /ldd .* \| grep -F libgomp[.]so[.]1/)
+  assert.match(binding, /node_re2_openmp%.*NODE_RE2_OPENMP === '1'/)
+  assert.match(binding, /node_re2_openmp==1.*-fopenmp/s)
+  assert.match(darwin, /NODE_RE2_OPENMP=0/)
 })
 
 test('Darwin release prebuild is staged, tested, and installed transactionally', () => {

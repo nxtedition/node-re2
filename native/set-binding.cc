@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "async-batch.h"
 #include "napi-utils.h"
 #include "parallel-for.h"
 #include "set-cache.h"
@@ -27,6 +28,18 @@ struct SetCompileWork {
   SharedSet set;
   bool owner = false;
   bool unexpected_failure = false;
+};
+
+struct SetMatchWork {
+  napi_async_work work = nullptr;
+  napi_deferred deferred = nullptr;
+  SharedSet set;
+  AsyncBatch inputs;
+  size_t batch_size = 0;
+  std::vector<std::vector<int>> matches;
+  std::vector<re2::RE2::Set::ErrorKind> errors;
+  re2::RE2::Set::ErrorKind match_error = re2::RE2::Set::kNoError;
+  bool failed = false;
 };
 
 napi_status CreateSetExternalRaw(napi_env env, SharedSet set, napi_value* result) {
@@ -77,29 +90,6 @@ void SetCompileExecute(napi_env, void* data) noexcept {
     work->set.reset();
     work->unexpected_failure = true;
   }
-}
-
-bool TakePendingException(napi_env env, napi_value* exception) {
-  bool pending = false;
-  return napi_is_exception_pending(env, &pending) == napi_ok && pending &&
-         napi_get_and_clear_last_exception(env, exception) == napi_ok;
-}
-
-void RejectDeferred(napi_env env, napi_deferred deferred, std::string_view message) {
-  napi_value reason;
-  if (TakePendingException(env, &reason)) {
-    (void)napi_reject_deferred(env, deferred, reason);
-    return;
-  }
-
-  napi_value message_value;
-  if (napi_create_string_utf8(env, message.data(), message.size(), &message_value) != napi_ok ||
-      napi_create_error(env, nullptr, message_value, &reason) != napi_ok) {
-    if (!TakePendingException(env, &reason) && napi_get_undefined(env, &reason) != napi_ok) {
-      return;
-    }
-  }
-  (void)napi_reject_deferred(env, deferred, reason);
 }
 
 void SetCompileComplete(napi_env env, napi_status status, void* data) {
@@ -274,6 +264,38 @@ bool CreateSetMatchResult(napi_env env, const std::vector<int>& indices, napi_va
   return true;
 }
 
+template <typename Texts>
+void MatchSetBatch(const re2::RE2::Set& set,
+                   const Texts& texts,
+                   size_t total_bytes,
+                   size_t batch_size,
+                   std::vector<std::vector<int>>* matches,
+                   std::vector<re2::RE2::Set::ErrorKind>* errors) {
+  matches->resize(texts.size());
+  errors->assign(texts.size(), re2::RE2::Set::kNoError);
+  ParallelFor(texts.size(), total_bytes, batch_size, [&](size_t index) {
+    re2::RE2::Set::ErrorInfo error_info{re2::RE2::Set::kNoError};
+    const bool matched = set.Match(texts[index], &(*matches)[index], &error_info);
+    if (!matched) {
+      (*errors)[index] = error_info.kind;
+    }
+  });
+}
+
+bool CreateSetBatchResult(napi_env env, const std::vector<std::vector<int>>& matches, napi_value* result) {
+  if (!Check(env, napi_create_array_with_length(env, matches.size(), result), "Failed to create set batch result")) {
+    return false;
+  }
+  for (size_t index = 0; index < matches.size(); ++index) {
+    napi_value match;
+    if (!CreateSetMatchResult(env, matches[index], &match) ||
+        !Check(env, napi_set_element(env, *result, index, match), "Failed to write set batch match")) {
+      return false;
+    }
+  }
+  return true;
+}
+
 napi_value SetTest(napi_env env, napi_callback_info info) {
   std::array<napi_value, 4> arguments;
   if (!GetArguments(env, info, &arguments)) {
@@ -331,15 +353,9 @@ napi_value SetTestMany(napi_env env, napi_callback_info info) {
       return nullptr;
     }
 
-    std::vector<std::vector<int>> matches(texts.size());
-    std::vector<re2::RE2::Set::ErrorKind> errors(texts.size(), re2::RE2::Set::kNoError);
-    ParallelFor(texts.size(), total_bytes, batch_size, [&](size_t index) {
-      re2::RE2::Set::ErrorInfo error_info{re2::RE2::Set::kNoError};
-      const bool matched = set.Match(texts[index], &matches[index], &error_info);
-      if (!matched) {
-        errors[index] = error_info.kind;
-      }
-    });
+    std::vector<std::vector<int>> matches;
+    std::vector<re2::RE2::Set::ErrorKind> errors;
+    MatchSetBatch(set, texts, total_bytes, batch_size, &matches, &errors);
 
     for (const re2::RE2::Set::ErrorKind error : errors) {
       if (error != re2::RE2::Set::kNoError) {
@@ -349,20 +365,134 @@ napi_value SetTestMany(napi_env env, napi_callback_info info) {
     }
 
     napi_value result;
-    if (!Check(env, napi_create_array_with_length(env, matches.size(), &result), "Failed to create set batch result")) {
-      return nullptr;
-    }
-    for (size_t index = 0; index < matches.size(); ++index) {
-      napi_value match;
-      if (!CreateSetMatchResult(env, matches[index], &match) ||
-          !Check(env, napi_set_element(env, result, index, match), "Failed to write set batch match")) {
-        return nullptr;
-      }
-    }
-    return result;
+    return CreateSetBatchResult(env, matches, &result) ? result : nullptr;
   } catch (const std::exception& error) {
     napi_throw_error(env, nullptr, error.what());
     return nullptr;
+  }
+}
+
+void SetTestManyExecute(napi_env, void* data) noexcept {
+  auto* work = static_cast<SetMatchWork*>(data);
+  try {
+    MatchSetBatch(*work->set, work->inputs, work->inputs.total_bytes, work->batch_size, &work->matches, &work->errors);
+    for (const re2::RE2::Set::ErrorKind error : work->errors) {
+      if (error != re2::RE2::Set::kNoError) {
+        work->match_error = error;
+        break;
+      }
+    }
+    work->errors.clear();
+  } catch (...) {
+    work->matches.clear();
+    work->errors.clear();
+    work->failed = true;
+  }
+}
+
+void SetTestManyComplete(napi_env env, napi_status status, void* data) {
+  std::unique_ptr<SetMatchWork> work(static_cast<SetMatchWork*>(data));
+  (void)napi_delete_async_work(env, work->work);
+  const napi_status release_status = ReleaseAsyncBatch(env, &work->inputs);
+
+  if (status == napi_cancelled) {
+    return;
+  }
+  if (status != napi_ok) {
+    RejectDeferred(env, work->deferred, "RE2Set batch matching was cancelled");
+    return;
+  }
+  if (release_status != napi_ok) {
+    RejectDeferred(env, work->deferred, "Failed to release unsafe RE2Set batch inputs");
+    return;
+  }
+  if (work->failed) {
+    RejectDeferred(env, work->deferred, "RE2Set batch matching failed");
+    return;
+  }
+  if (work->match_error != re2::RE2::Set::kNoError) {
+    RejectDeferred(env, work->deferred, SetMatchErrorMessage(work->match_error));
+    return;
+  }
+
+  napi_value result;
+  if (!CreateSetBatchResult(env, work->matches, &result)) {
+    RejectDeferred(env, work->deferred, "Failed to create RE2Set batch result");
+    return;
+  }
+  if (napi_resolve_deferred(env, work->deferred, result) != napi_ok) {
+    RejectDeferred(env, work->deferred, "Failed to resolve RE2Set batch matching");
+  }
+}
+
+napi_value SetTestManyAsync(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 4> arguments;
+  if (!GetArgumentsWithOptional<2>(env, info, &arguments)) {
+    return nullptr;
+  }
+
+  napi_deferred deferred;
+  napi_value promise;
+  if (!Check(env, napi_create_promise(env, &deferred, &promise), "Failed to create RE2Set batch matching promise")) {
+    return nullptr;
+  }
+
+  std::unique_ptr<SetMatchWork> work;
+  try {
+    work = std::make_unique<SetMatchWork>();
+    work->deferred = deferred;
+
+    SetContext* context = nullptr;
+    if (!GetTaggedExternal(env, arguments[0], &kSetContextTypeTag, "Invalid RE2Set context", &context)) {
+      RejectDeferred(env, deferred, "Failed to read RE2Set context");
+      return promise;
+    }
+    work->set = context->set;
+
+    bool unsafe = false;
+    if (!GetBatchSize(env, arguments[2], &work->batch_size) ||
+        !GetBoolean(env, arguments[3], "unsafe must be a boolean", &unsafe) ||
+        !GetAsyncBatch(env, arguments[1], unsafe, &work->inputs)) {
+      RejectDeferred(env, deferred, "Failed to prepare RE2Set batch inputs");
+      return promise;
+    }
+
+    napi_value resource_name;
+    if (napi_create_string_utf8(env, "@nxtedition/re2:test-many-set", NAPI_AUTO_LENGTH, &resource_name) != napi_ok ||
+        napi_create_async_work(env, nullptr, resource_name, SetTestManyExecute, SetTestManyComplete, work.get(),
+                               &work->work) != napi_ok) {
+      (void)ReleaseAsyncBatch(env, &work->inputs);
+      RejectDeferred(env, deferred, "Failed to create RE2Set batch async work");
+      return promise;
+    }
+    if (napi_queue_async_work(env, work->work) != napi_ok) {
+      (void)napi_delete_async_work(env, work->work);
+      work->work = nullptr;
+      (void)ReleaseAsyncBatch(env, &work->inputs);
+      RejectDeferred(env, deferred, "Failed to queue RE2Set batch async work");
+      return promise;
+    }
+
+    work.release();
+    return promise;
+  } catch (const std::exception& error) {
+    if (work != nullptr) {
+      if (work->work != nullptr) {
+        (void)napi_delete_async_work(env, work->work);
+      }
+      (void)ReleaseAsyncBatch(env, &work->inputs);
+    }
+    RejectDeferred(env, deferred, error.what());
+    return promise;
+  } catch (...) {
+    if (work != nullptr) {
+      if (work->work != nullptr) {
+        (void)napi_delete_async_work(env, work->work);
+      }
+      (void)ReleaseAsyncBatch(env, &work->inputs);
+    }
+    RejectDeferred(env, deferred, "Failed to prepare RE2Set batch matching");
+    return promise;
   }
 }
 
@@ -404,7 +534,8 @@ bool RegisterSetBindings(napi_env env, napi_value exports) {
          ExportFunction(env, exports, "set_compile_async", SetCompileAsync) &&
          ExportFunction(env, exports, "set_compile_cache_stats", SetCompileCacheStats) &&
          ExportFunction(env, exports, "set_test", SetTest) &&
-         ExportFunction(env, exports, "set_test_many", SetTestMany);
+         ExportFunction(env, exports, "set_test_many", SetTestMany) &&
+         ExportFunction(env, exports, "set_test_many_async", SetTestManyAsync);
 }
 
 }  // namespace node_re2

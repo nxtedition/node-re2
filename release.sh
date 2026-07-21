@@ -53,6 +53,7 @@ fi
 # Linux is isolated by Docker; the Darwin helper sanitizes the remaining
 # compiler and prebuildify environment at its build boundary.
 export NODE_RE2_MARCH=
+export NODE_RE2_OPENMP=0
 unset CFLAGS CPPFLAGS CXXFLAGS LDFLAGS GYP_DEFINES
 
 echo "Building linux-x64 prebuild (Docker)..."

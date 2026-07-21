@@ -17,12 +17,16 @@ ARG JOBS=8
 # Match the deployment RocksDB build: the shipped x64 binary targets Zen 3,
 # enabling AVX2 while local source builds remain portable by leaving this unset.
 RUN npm run build:ts && \
-  CXXFLAGS=-DNODE_RE2_PARALLEL=1 NODE_RE2_MARCH=znver3 JOBS=$JOBS npx prebuildify \
+  NODE_RE2_OPENMP=1 NODE_RE2_MARCH=znver3 JOBS=$JOBS npx prebuildify \
   -t "$(node -p process.versions.node)" \
   --napi \
   --strip \
   --tag-libc \
   --arch x64
+
+# The published Linux binary intentionally relies on Debian's GNU OpenMP
+# runtime instead of embedding another thread-pool implementation.
+RUN ldd prebuilds/linux-x64/@nxtedition+re2.glibc.node | grep -F libgomp.so.1
 
 # PREBUILDS_ONLY makes node-gyp-build ignore build/Release, proving that the
 # binary which will be embedded in the npm tarball is independently loadable.

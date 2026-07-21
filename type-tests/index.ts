@@ -1,5 +1,11 @@
 import { Buffer } from 'node:buffer'
-import { RE2, RE2Set, type BinaryView, type TestManyOptions } from '@nxtedition/re2'
+import {
+  RE2,
+  RE2Set,
+  type BinaryView,
+  type TestManyAsyncOptions,
+  type TestManyOptions,
+} from '@nxtedition/re2'
 
 const buffer = Buffer.from('foo')
 const typedArray = new Uint8Array(buffer)
@@ -16,10 +22,26 @@ const asyncExpressions: RE2Set = await RE2Set.compileAsync([
 ] as const)
 const batchMatches: boolean[] = expression.testMany(views)
 const batchIndices: number[][] = expressions.testMany(views)
+const syncBatchMatches: boolean[] = expression.testManySync(views)
+const syncBatchIndices: number[][] = expressions.testManySync(views)
+const asyncBatchMatches: Promise<boolean[]> = expression.testManyAsync(views)
+const asyncBatchIndices: Promise<number[][]> = expressions.testManyAsync(views)
 const sequentialOptions = { batchSize: Infinity } satisfies TestManyOptions
 const sequentialMatches: boolean[] = expression.testMany(views, sequentialOptions)
 const chunkedIndices: number[][] = expressions.testMany(views, { batchSize: 16 })
-void [batchMatches, batchIndices, sequentialMatches, chunkedIndices]
+const unsafeOptions = { batchSize: 16, unsafe: true } satisfies TestManyAsyncOptions
+const unsafeMatches: Promise<boolean[]> = expression.testManyAsync(views, unsafeOptions)
+void [
+  batchMatches,
+  batchIndices,
+  syncBatchMatches,
+  syncBatchIndices,
+  asyncBatchMatches,
+  asyncBatchIndices,
+  sequentialMatches,
+  chunkedIndices,
+  unsafeMatches,
+]
 
 for (const view of views) {
   const matches: boolean = expression.test(view, 0, view.byteLength)
@@ -42,7 +64,11 @@ new RE2Set('foo')
 expressions.testMany(buffer)
 // @ts-expect-error batchSize must be numeric
 expression.testMany(views, { batchSize: '16' })
+// @ts-expect-error unsafe must be boolean
+expression.testManyAsync(views, { unsafe: 'yes' })
 // @ts-expect-error options are intentionally limited to scheduling batch size
 expressions.testMany(views, { concurrency: 2 })
+// @ts-expect-error unsafe is only available for asynchronous matching
+expressions.testManySync(views, { unsafe: true })
 // @ts-expect-error RE2Set.compileAsync requires an array
 RE2Set.compileAsync('foo')

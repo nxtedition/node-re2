@@ -3,7 +3,8 @@ import { createHook } from 'node:async_hooks'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { describe, test } from 'node:test'
-import { setTimeout as delay } from 'node:timers/promises'
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises'
+import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { RE2, RE2Set } from '@nxtedition/re2'
 import nodeGypBuild from 'node-gyp-build'
@@ -113,37 +114,42 @@ describe('RE2', () => {
     assert.throws(() => new RE2('foo').test('foo'), TypeError)
   })
 
-  test('matches batches', () => {
+  test('matches batches synchronously and asynchronously', async () => {
     const expression = new RE2('^match-[0-9]+$')
     const inputs = Array.from({ length: 512 }, (_, index) =>
       Buffer.from(index % 3 === 0 ? `match-${index}` : `miss-${index}`)
     )
 
-    assert.deepEqual(
-      expression.testMany(inputs),
-      inputs.map(input => expression.test(input))
-    )
+    const expected = inputs.map(input => expression.test(input))
+    assert.deepEqual(expression.testMany(inputs), expected)
+    assert.deepEqual(expression.testManySync(inputs), expected)
+    assert.deepEqual(await expression.testManyAsync(inputs), expected)
+    assert.deepEqual(await expression.testManyAsync(inputs, { unsafe: true }), expected)
     for (const batchSize of [1, 7, inputs.length, inputs.length + 1, Infinity]) {
-      assert.deepEqual(
-        expression.testMany(inputs, { batchSize }),
-        inputs.map(input => expression.test(input))
-      )
+      assert.deepEqual(expression.testManySync(inputs, { batchSize }), expected)
+      assert.deepEqual(await expression.testManyAsync(inputs, { batchSize }), expected)
     }
     assert.deepEqual(expression.testMany([]), [])
+    assert.deepEqual(expression.testManySync([]), [])
+    assert.deepEqual(await expression.testManyAsync([]), [])
     assert.deepEqual(expression.testMany([], { batchSize: Infinity }), [])
     assert.throws(() => expression.testMany('match-1'), TypeError)
+    assert.throws(() => expression.testManyAsync('match-1'), TypeError)
     assert.throws(
       () => expression.testMany([Buffer.from('match-1'), 'match-2']),
       /input must be a Buffer, TypedArray, or DataView/
     )
     assert.throws(() => expression.testMany(inputs, null), TypeError)
     assert.throws(() => expression.testMany(inputs, { batchSize: '1' }), TypeError)
+    assert.throws(() => expression.testManyAsync(inputs, { unsafe: 'yes' }), TypeError)
     for (const batchSize of [0, -1, 1.5, Number.NaN, Number.NEGATIVE_INFINITY, 2 ** 53]) {
       assert.throws(() => expression.testMany(inputs, { batchSize }), RangeError)
+      assert.throws(() => expression.testManyAsync(inputs, { batchSize }), RangeError)
     }
     const oversizedInputs = []
     oversizedInputs.length = 2 ** 20 + 1
     assert.throws(() => expression.testMany(oversizedInputs), /Too many inputs/)
+    assert.throws(() => expression.testManyAsync(oversizedInputs), /Too many inputs/)
     assert.throws(
       () => binding.set_test_many(binding.set_init([Buffer.from('match')]), oversizedInputs),
       /Too many inputs/
@@ -164,6 +170,76 @@ describe('RE2', () => {
       expression.testMany(new InputArray(Buffer.from('match-6'), Buffer.from('miss-2'))),
       [true, false]
     )
+  })
+
+  test('snapshots safe asynchronous batch inputs before returning', async () => {
+    const bytes = Uint8Array.from(Buffer.from('foo'))
+    const expression = new RE2('^foo$')
+    const expressions = new RE2Set(['^foo$', '^bar$'])
+    const regexMatch = expression.testManyAsync([bytes])
+    const setMatch = expressions.testManyAsync([bytes])
+
+    structuredClone(bytes.buffer, { transfer: [bytes.buffer] })
+    assert.equal(bytes.byteLength, 0)
+    assert.deepEqual(await regexMatch, [true])
+    assert.deepEqual(await setMatch, [[0]])
+  })
+
+  test('unsafe asynchronous matching borrows input bytes without copying', () => {
+    const child = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('./fixtures/unsafe-batch.js', import.meta.url))],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, UV_THREADPOOL_SIZE: '1' },
+        timeout: 30_000,
+      }
+    )
+
+    assert.equal(child.signal, null)
+    assert.equal(child.status, 0, child.stderr)
+    assert.equal(child.stderr, '')
+  })
+
+  test('runs asynchronous batch matching off the event loop', async t => {
+    const asyncResourceTypes = new Set()
+    const hook = createHook({
+      init(_asyncId, type) {
+        if (type.startsWith('@nxtedition/re2:test-many')) {
+          asyncResourceTypes.add(type)
+        }
+      },
+    }).enable()
+    t.after(() => hook.disable())
+    const expression = new RE2('^(?:[a-z]{1,8}[0-9])+$')
+    const input = Buffer.alloc(1 << 20, 0x61)
+    const inputs = Array(128).fill(input)
+    let turnCompleted = false
+    const turn = nextTurn().then(() => {
+      turnCompleted = true
+      return 'turn'
+    })
+
+    const asyncMatch = expression.testManyAsync(inputs, { batchSize: Infinity })
+    const winner = await Promise.race([asyncMatch.then(() => 'match'), turn])
+    assert.equal(winner, 'turn')
+    assert.deepEqual(await asyncMatch, Array(inputs.length).fill(false))
+    assert.equal(turnCompleted, true)
+
+    const syncTurn = nextTurn().then(() => {
+      turnCompleted = true
+    })
+    turnCompleted = false
+    assert.deepEqual(
+      expression.testManySync(inputs.slice(0, 8), { batchSize: Infinity }),
+      Array(8).fill(false)
+    )
+    assert.equal(turnCompleted, false)
+    await syncTurn
+
+    await new RE2Set(['^a', 'z$']).testManyAsync([Buffer.from('abc')])
+    assert.ok(asyncResourceTypes.has('@nxtedition/re2:test-many'))
+    assert.ok(asyncResourceTypes.has('@nxtedition/re2:test-many-set'))
   })
 
   test('matches byte ranges and clamps them without 32-bit wrapping', () => {
@@ -244,31 +320,43 @@ describe('RE2Set', () => {
     assert.deepEqual(expressions.test(bytes, 2 ** 32, 1), [])
   })
 
-  test('matches batches with independent RE2Set result storage', () => {
+  test('matches batches with independent RE2Set result storage', async () => {
     const expressions = new RE2Set(['^foo-[0-9]+$', '[02468]$', '^bar'])
     const inputs = Array.from({ length: 512 }, (_, index) =>
       Buffer.from(index % 2 === 0 ? `foo-${index}` : `bar-${index}`)
     )
 
+    const expected = inputs.map(input => toSortedIndices(expressions.test(input)))
+    assert.deepEqual(expressions.testMany(inputs).map(toSortedIndices), expected)
+    assert.deepEqual(expressions.testManySync(inputs).map(toSortedIndices), expected)
+    assert.deepEqual((await expressions.testManyAsync(inputs)).map(toSortedIndices), expected)
     assert.deepEqual(
-      expressions.testMany(inputs).map(toSortedIndices),
-      inputs.map(input => toSortedIndices(expressions.test(input)))
+      (await expressions.testManyAsync(inputs, { unsafe: true })).map(toSortedIndices),
+      expected
     )
     for (const batchSize of [1, 11, inputs.length, inputs.length + 1, Infinity]) {
       assert.deepEqual(
-        expressions.testMany(inputs, { batchSize }).map(toSortedIndices),
-        inputs.map(input => toSortedIndices(expressions.test(input)))
+        expressions.testManySync(inputs, { batchSize }).map(toSortedIndices),
+        expected
+      )
+      assert.deepEqual(
+        (await expressions.testManyAsync(inputs, { batchSize })).map(toSortedIndices),
+        expected
       )
     }
     assert.deepEqual(expressions.testMany([]), [])
+    assert.deepEqual(expressions.testManySync([]), [])
+    assert.deepEqual(await expressions.testManyAsync([]), [])
     assert.deepEqual(expressions.testMany([], { batchSize: Infinity }), [])
     assert.throws(() => expressions.testMany('foo-1'), TypeError)
+    assert.throws(() => expressions.testManyAsync('foo-1'), TypeError)
     assert.throws(
       () => expressions.testMany([Buffer.from('foo-1'), 'bar-2']),
       /input must be a Buffer, TypedArray, or DataView/
     )
     assert.throws(() => expressions.testMany(inputs, 1), TypeError)
     assert.throws(() => expressions.testMany(inputs, { batchSize: Symbol() }), TypeError)
+    assert.throws(() => expressions.testManyAsync(inputs, { unsafe: 1 }), TypeError)
     assert.deepEqual(
       expressions.testMany(new Proxy([Buffer.from('foo-2'), Buffer.from('bar-3')], {})).map(
         toSortedIndices
@@ -455,7 +543,29 @@ describe('RE2Set', () => {
     }
   })
 
-  test('shares the persistent batch pool across concurrent Workers', async t => {
+  test('survives Worker termination with batch matching in flight', async () => {
+    for (const kind of ['regex', 'set']) {
+      for (const unsafe of [false, true]) {
+        for (let iteration = 0; iteration < 3; ++iteration) {
+          const worker = new Worker(
+            new URL('./fixtures/terminate-match-worker.js', import.meta.url),
+            { workerData: { kind, unsafe } }
+          )
+          await withTimeout(
+            new Promise((resolve, reject) => {
+              worker.once('message', resolve)
+              worker.once('error', reject)
+            }),
+            10_000,
+            'Batch Worker never queued native matching'
+          )
+          await withTimeout(worker.terminate(), 10_000, 'Batch Worker did not terminate')
+        }
+      }
+    }
+  })
+
+  test('shares the OpenMP runtime across concurrent Workers', async t => {
     if (binding.batch_parallelism(128, 128 * 16_384) < 2) {
       t.skip('parallel matching is only enabled in the Linux prebuild')
       return
@@ -488,7 +598,7 @@ describe('RE2Set', () => {
       const input = Buffer.alloc(16_384, 0x61)
       assert.ok(
         new RE2('z$').testMany(Array(128).fill(input)).every(result => !result),
-        'Worker cleanup must not tear down the pool while the main environment is active'
+        'The OpenMP-backed addon must remain usable after concurrent Workers exit'
       )
     } finally {
       Atomics.store(barrier, 1, 1)
@@ -507,10 +617,20 @@ test('supports CommonJS loading and async compilation', async () => {
     true,
     false,
   ])
+  assert.deepEqual(
+    new commonjs.RE2('foo').testManySync([Buffer.from('foo'), Buffer.from('bar')]),
+    [true, false]
+  )
+  assert.deepEqual(
+    await new commonjs.RE2('foo').testManyAsync([Buffer.from('foo'), Buffer.from('bar')]),
+    [true, false]
+  )
 
   const set = await commonjs.RE2Set.compileAsync(['foo'])
   assert.deepEqual(set.test(Buffer.from('foo')), [0])
   assert.deepEqual(set.testMany([Buffer.from('foo'), Buffer.from('bar')]), [[0], []])
+  assert.deepEqual(set.testManySync([Buffer.from('foo'), Buffer.from('bar')]), [[0], []])
+  assert.deepEqual(await set.testManyAsync([Buffer.from('foo'), Buffer.from('bar')]), [[0], []])
 })
 
 test('can reload the native addon in one environment', () => {
@@ -537,6 +657,24 @@ test('can reload the native addon in one environment', () => {
   assert.equal(child.status, 0, child.stderr)
   assert.equal(child.stderr, '')
 })
+
+test(
+  'Linux prebuild dynamically links the GNU OpenMP runtime',
+  {
+    skip:
+      process.platform === 'linux' && process.env.PREBUILDS_ONLY
+        ? false
+        : 'GNU OpenMP is only enabled in the Linux prebuild',
+  },
+  () => {
+    const bindingPath = nodeGypBuild.path(import.meta.dirname)
+    const result = spawnSync('ldd', [bindingPath], { encoding: 'utf8' })
+
+    assert.equal(result.signal, null)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /libgomp[.]so[.]1/)
+  }
+)
 
 test('native addon has no unresolved vendored symbols', {
   skip: process.platform === 'win32' ? 'nm is not available on Windows' : false
