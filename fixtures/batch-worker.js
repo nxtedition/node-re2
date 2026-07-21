@@ -13,9 +13,19 @@ Atomics.add(barrier, 0, 1)
 Atomics.notify(barrier, 0)
 Atomics.wait(barrier, 1, 0)
 
-for (let iteration = 0; iteration < 100; ++iteration) {
-  assert.ok(regex.testMany(twoThreadInputs).every(result => !result))
-  assert.ok(set.testMany(fullPoolInputs).every(indices => indices.length === 0))
+for (let iteration = 0; iteration < 20; ++iteration) {
+  assert.ok(regex.testManySync(twoThreadInputs).every(result => !result))
+  assert.ok(set.testManySync(fullPoolInputs).every(indices => indices.length === 0))
+  assert.ok(
+    (await regex.testManyAsync(twoThreadInputs, { unsafe: iteration % 2 === 0 })).every(
+      result => !result
+    )
+  )
+  assert.ok(
+    (await set.testManyAsync(fullPoolInputs, { unsafe: iteration % 2 !== 0 })).every(
+      indices => indices.length === 0
+    )
+  )
 }
 
 parentPort.postMessage('ok')

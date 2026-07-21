@@ -6,6 +6,10 @@
 #include <cstddef>
 #include <limits>
 
+#ifdef NODE_RE2_OPENMP
+#include <omp.h>
+#endif
+
 namespace node_re2 {
 
 #ifdef NODE_RE2_BATCH_BYTES_PER_THREAD
@@ -29,12 +33,11 @@ struct BatchPlan {
 };
 
 inline size_t MaxBatchParallelism() {
-#ifdef NODE_RE2_PARALLEL
-  static const size_t parallelism = [] {
-    const size_t available = std::max<unsigned int>(uv_available_parallelism(), 1);
-    return std::max<size_t>(available / 2, 1);
-  }();
-  return parallelism;
+#ifdef NODE_RE2_OPENMP
+  const size_t available = std::max<unsigned int>(uv_available_parallelism(), 1);
+  const size_t affinity_limit = std::max<size_t>(available / 2, 1);
+  const size_t runtime_limit = static_cast<size_t>(std::max(omp_get_thread_limit(), 1));
+  return std::min(affinity_limit, runtime_limit);
 #else
   return 1;
 #endif
@@ -44,7 +47,7 @@ inline BatchPlan MakeBatchPlan(size_t size, size_t total_bytes, size_t requested
   if (size == 0) {
     return {};
   }
-#ifdef NODE_RE2_PARALLEL
+#ifdef NODE_RE2_OPENMP
   const size_t work_threads = total_bytes == 0 ? 1 : 1 + ((total_bytes - 1) / kBatchBytesPerThread);
   const size_t maximum_threads = std::min({MaxBatchParallelism(), size, work_threads});
   size_t batch_size = requested_batch_size;

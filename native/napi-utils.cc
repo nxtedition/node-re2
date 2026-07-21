@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <limits>
 
+#include "text-batch.h"
+
 namespace node_re2 {
 namespace {
 
@@ -103,6 +105,42 @@ bool GetPatternImpl(napi_env env, napi_value value, size_t maximum, std::string*
     return false;
   }
   result->assign(view.data, view.size);
+  return true;
+}
+
+bool TakePendingException(napi_env env, napi_value* exception) {
+  bool pending = false;
+  return napi_is_exception_pending(env, &pending) == napi_ok && pending &&
+         napi_get_and_clear_last_exception(env, exception) == napi_ok;
+}
+
+bool GetInputValues(napi_env env, napi_value value, std::vector<napi_value>* inputs) {
+  bool is_array = false;
+  if (!Check(env, napi_is_array(env, value, &is_array), "Failed to inspect inputs")) {
+    return false;
+  }
+  if (!is_array) {
+    napi_throw_type_error(env, nullptr, "inputs must be an array");
+    return false;
+  }
+
+  uint32_t input_count = 0;
+  if (!Check(env, napi_get_array_length(env, value, &input_count), "Failed to read inputs")) {
+    return false;
+  }
+  if (input_count > kMaxBatchInputCount) {
+    napi_throw_range_error(env, nullptr, "Too many inputs");
+    return false;
+  }
+
+  inputs->reserve(input_count);
+  for (uint32_t index = 0; index < input_count; ++index) {
+    napi_value input;
+    if (!Check(env, napi_get_element(env, value, index, &input), "Failed to read input")) {
+      return false;
+    }
+    inputs->push_back(input);
+  }
   return true;
 }
 
@@ -252,35 +290,12 @@ bool GetPatterns(napi_env env, napi_value value, std::vector<std::string>* patte
 }
 
 bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* texts, size_t* total_bytes) {
-  bool is_array = false;
-  if (!Check(env, napi_is_array(env, value, &is_array), "Failed to inspect inputs")) {
-    return false;
-  }
-  if (!is_array) {
-    napi_throw_type_error(env, nullptr, "inputs must be an array");
-    return false;
-  }
-
-  uint32_t input_count = 0;
-  if (!Check(env, napi_get_array_length(env, value, &input_count), "Failed to read inputs")) {
-    return false;
-  }
-  if (input_count > kMaxBatchInputCount) {
-    napi_throw_range_error(env, nullptr, "Too many inputs");
-    return false;
-  }
-
   std::vector<napi_value> inputs;
-  inputs.reserve(input_count);
-  for (uint32_t index = 0; index < input_count; ++index) {
-    napi_value input;
-    if (!Check(env, napi_get_element(env, value, index, &input), "Failed to read input")) {
-      return false;
-    }
-    inputs.push_back(input);
+  if (!GetInputValues(env, value, &inputs)) {
+    return false;
   }
 
-  texts->reserve(input_count);
+  texts->reserve(inputs.size());
   *total_bytes = 0;
   for (napi_value input : inputs) {
     ByteView view;
@@ -293,6 +308,41 @@ bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* tex
     }
     *total_bytes += view.size;
     texts->emplace_back(view.data, view.size);
+  }
+  return true;
+}
+
+bool GetTextBatch(napi_env env, napi_value value, TextBatch* texts) {
+  texts->bytes.clear();
+  texts->offsets.clear();
+
+  std::vector<napi_value> inputs;
+  if (!GetInputValues(env, value, &inputs)) {
+    return false;
+  }
+
+  std::vector<ByteView> views;
+  views.reserve(inputs.size());
+  size_t total_bytes = 0;
+  for (napi_value input : inputs) {
+    ByteView view;
+    if (!GetByteView(env, input, &view)) {
+      return false;
+    }
+    if (view.size > std::numeric_limits<size_t>::max() - total_bytes) {
+      napi_throw_range_error(env, nullptr, "Batch input data is too large");
+      return false;
+    }
+    total_bytes += view.size;
+    views.push_back(view);
+  }
+
+  texts->bytes.reserve(total_bytes);
+  texts->offsets.reserve(views.size() + 1);
+  texts->offsets.push_back(0);
+  for (const ByteView view : views) {
+    texts->bytes.append(view.data, view.size);
+    texts->offsets.push_back(texts->bytes.size());
   }
   return true;
 }
@@ -332,6 +382,39 @@ bool GetBatchSize(napi_env env, napi_value value, size_t* batch_size) {
   }
   *batch_size = static_cast<size_t>(number);
   return true;
+}
+
+bool GetBoolean(napi_env env, napi_value value, const char* error_message, bool* result) {
+  napi_valuetype type;
+  if (!Check(env, napi_typeof(env, value, &type), "Failed to inspect boolean option")) {
+    return false;
+  }
+  if (type == napi_undefined) {
+    *result = false;
+    return true;
+  }
+  if (type != napi_boolean) {
+    napi_throw_type_error(env, nullptr, error_message);
+    return false;
+  }
+  return Check(env, napi_get_value_bool(env, value, result), "Failed to read boolean option");
+}
+
+void RejectDeferred(napi_env env, napi_deferred deferred, std::string_view message) {
+  napi_value reason;
+  if (TakePendingException(env, &reason)) {
+    (void)napi_reject_deferred(env, deferred, reason);
+    return;
+  }
+
+  napi_value message_value;
+  if (napi_create_string_utf8(env, message.data(), message.size(), &message_value) != napi_ok ||
+      napi_create_error(env, nullptr, message_value, &reason) != napi_ok) {
+    if (!TakePendingException(env, &reason) && napi_get_undefined(env, &reason) != napi_ok) {
+      return;
+    }
+  }
+  (void)napi_reject_deferred(env, deferred, reason);
 }
 
 }  // namespace node_re2

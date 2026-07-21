@@ -4,8 +4,8 @@
 #include <cmath>
 #include <cstddef>
 
-#include "batch-plan.h"
 #include "napi-utils.h"
+#include "openmp-runtime.h"
 
 namespace node_re2 {
 namespace {
@@ -52,10 +52,35 @@ napi_value BatchThreadCount(napi_env env, napi_callback_info info) {
              : nullptr;
 }
 
+napi_value ObservedBatchThreadCount(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 3> arguments;
+  if (!GetArgumentsWithOptional<2>(env, info, &arguments)) {
+    return nullptr;
+  }
+  size_t size = 0;
+  size_t total_bytes = 0;
+  if (!GetSizeArgument(env, arguments[0], "Batch size must be a non-negative integer", &size) ||
+      !GetSizeArgument(env, arguments[1], "Batch bytes must be a non-negative integer", &total_bytes)) {
+    return nullptr;
+  }
+  size_t batch_size = 0;
+  if (!GetBatchSize(env, arguments[2], &batch_size)) {
+    return nullptr;
+  }
+
+  napi_value result;
+  return Check(env,
+               napi_create_uint32(env, ObserveBatchParallelism(MakeBatchPlan(size, total_bytes, batch_size)), &result),
+               "Failed to create observed batch thread count")
+             ? result
+             : nullptr;
+}
+
 }  // namespace
 
 bool RegisterBatchBindings(napi_env env, napi_value exports) {
-  return ExportFunction(env, exports, "batch_parallelism", BatchThreadCount);
+  return ExportFunction(env, exports, "batch_parallelism", BatchThreadCount) &&
+         ExportFunction(env, exports, "batch_observed_parallelism", ObservedBatchThreadCount);
 }
 
 }  // namespace node_re2

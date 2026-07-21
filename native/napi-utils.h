@@ -15,6 +15,8 @@
 
 namespace node_re2 {
 
+struct TextBatch;
+
 struct ByteView {
   const char* data;
   size_t size;
@@ -64,7 +66,10 @@ bool GetPattern(napi_env env, napi_value value, std::string* pattern, size_t max
 bool GetText(napi_env env, napi_value input, napi_value offset_value, napi_value length_value, std::string_view* text);
 bool GetPatterns(napi_env env, napi_value value, std::vector<std::string>* patterns);
 bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* texts, size_t* total_bytes);
+bool GetTextBatch(napi_env env, napi_value value, TextBatch* texts);
 bool GetBatchSize(napi_env env, napi_value value, size_t* batch_size);
+bool GetBoolean(napi_env env, napi_value value, const char* error_message, bool* result);
+void RejectDeferred(napi_env env, napi_deferred deferred, std::string_view message);
 
 template <typename T>
 void Finalize(napi_env, void* data, void*) {

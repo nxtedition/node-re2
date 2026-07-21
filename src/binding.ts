@@ -15,6 +15,7 @@ export interface SetCompileCacheStats {
 
 interface NativeBinding {
   batch_parallelism(inputCount: number, totalBytes: number, batchSize?: number): number
+  batch_observed_parallelism(inputCount: number, totalBytes: number, batchSize?: number): number
   regex_init(pattern: Pattern): NativeContext
   regex_test(
     context: NativeContext,
@@ -27,6 +28,12 @@ interface NativeBinding {
     inputs: readonly BinaryView[],
     batchSize?: number
   ): boolean[]
+  regex_test_many_async(
+    context: NativeContext,
+    inputs: readonly BinaryView[],
+    batchSize: number,
+    unsafe: boolean
+  ): Promise<boolean[]>
   set_init(patterns: readonly Pattern[]): NativeContext
   set_compile_async(patterns: readonly Pattern[]): Promise<NativeContext>
   set_compile_cache_stats(): SetCompileCacheStats
@@ -41,6 +48,12 @@ interface NativeBinding {
     inputs: readonly BinaryView[],
     batchSize?: number
   ): number[][]
+  set_test_many_async(
+    context: NativeContext,
+    inputs: readonly BinaryView[],
+    batchSize: number,
+    unsafe: boolean
+  ): Promise<number[][]>
 }
 
 const require = createRequire(import.meta.url)

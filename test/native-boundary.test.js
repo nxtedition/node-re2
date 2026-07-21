@@ -13,17 +13,27 @@ test('reports scheduler-selected batch threads', () => {
   assert.throws(() => binding.batch_parallelism(-1, 1), RangeError)
   assert.equal(binding.batch_parallelism(0, 0), 0)
   assert.equal(binding.batch_parallelism(128, 128 * 64), 1)
-  const expectedMaximum =
+  const affinityMaximum =
     process.platform === 'linux' && process.env.PREBUILDS_ONLY
       ? Math.max(Math.floor(availableParallelism() / 2), 1)
       : 1
-  assert.equal(binding.batch_parallelism(1_000_000, 1_000_000_000), expectedMaximum)
+  const plannedMaximum = binding.batch_parallelism(1_000_000, 1_000_000_000)
+  assert.ok(plannedMaximum >= 1)
+  assert.ok(plannedMaximum <= affinityMaximum)
+  if (!(process.platform === 'linux' && process.env.PREBUILDS_ONLY)) {
+    assert.equal(plannedMaximum, 1)
+  }
   assert.equal(binding.batch_parallelism(128, 128 * 16_384, Infinity), 1)
   assert.equal(binding.batch_parallelism(128, 128 * 16_384, 128), 1)
   assert.equal(binding.batch_parallelism(128, 128 * 16_384, 256), 1)
   assert.equal(
     binding.batch_parallelism(128, 128 * 16_384, 64),
-    Math.min(expectedMaximum, 2)
+    Math.min(plannedMaximum, 2)
+  )
+  assert.equal(binding.batch_observed_parallelism(0, 0), 0)
+  assert.equal(binding.batch_observed_parallelism(128, 128 * 16_384, Infinity), 1)
+  assert.ok(
+    binding.batch_observed_parallelism(1_000_000, 1_000_000_000) <= plannedMaximum
   )
 })
 
@@ -85,6 +95,14 @@ test('rejects mismatched native contexts without terminating Node', () => {
           () => binding.regex_test(set, Buffer.from('foo'), 0, 3),
           /Invalid RE2 context/
         )
+        await assert.rejects(
+          binding.set_test_many_async(regex, [Buffer.from('foo')], Infinity, false),
+          /Invalid RE2Set context/
+        )
+        await assert.rejects(
+          binding.regex_test_many_async(set, [Buffer.from('foo')], Infinity, false),
+          /Invalid RE2 context/
+        )
       `,
     ],
     { encoding: 'utf8' }
@@ -95,7 +113,7 @@ test('rejects mismatched native contexts without terminating Node', () => {
   assert.equal(child.stderr, '')
 })
 
-test('collects batch values before reading their backing stores', () => {
+test('collects batch values before reading their backing stores', async () => {
   const regex = binding.regex_init('^$')
   const first = new Uint8Array(Buffer.from('foo'))
   let transferred
@@ -111,6 +129,24 @@ test('collects batch values before reading their backing stores', () => {
 
   assert.deepEqual(binding.regex_test_many(regex, inputs), [true, false])
   assert.equal(first.byteLength, 0)
+
+  const asyncFirst = new Uint8Array(Buffer.from('foo'))
+  let asyncTransferred
+  const asyncInputs = [asyncFirst]
+  Object.defineProperty(asyncInputs, 1, {
+    enumerable: true,
+    get() {
+      asyncTransferred = structuredClone(asyncFirst.buffer, { transfer: [asyncFirst.buffer] })
+      return new Uint8Array(asyncTransferred)
+    },
+  })
+  asyncInputs.length = 2
+
+  assert.deepEqual(await binding.regex_test_many_async(regex, asyncInputs, Infinity, false), [
+    true,
+    false,
+  ])
+  assert.equal(asyncFirst.byteLength, 0)
 })
 
 test('bounds native pattern count before compiling', async () => {
@@ -135,13 +171,14 @@ test('packs generated JavaScript, declarations, and split native sources', () =>
     'lib/index.d.ts',
     'lib/binding.js',
     'binding.cc',
-    'native/addon-lifecycle.cc',
-    'native/addon-lifecycle.h',
+    'native/async-batch.cc',
+    'native/async-batch.h',
     'native/batch-binding.cc',
     'native/batch-binding.h',
     'native/napi-utils.cc',
     'native/napi-utils.h',
     'native/batch-plan.h',
+    'native/openmp-runtime.h',
     'native/parallel-for.h',
     'native/regex-binding.cc',
     'native/regex-binding.h',
@@ -149,8 +186,7 @@ test('packs generated JavaScript, declarations, and split native sources', () =>
     'native/set-binding.h',
     'native/set-cache.cc',
     'native/set-cache.h',
-    'native/thread-pool.cc',
-    'native/thread-pool.h',
+    'native/text-batch.h',
   ]) {
     assert.ok(paths.has(path), `${path} is missing from the npm tarball`)
   }

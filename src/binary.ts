@@ -5,9 +5,18 @@ export interface TestManyOptions {
   /**
    * Inputs per native scheduling chunk. A finite value must be a positive safe
    * integer. Omit it for automatic scheduling. Infinity or a value at least as
-   * large as the input count executes sequentially on the caller thread.
+   * large as the input count disables intra-call parallelism.
    */
   readonly batchSize?: number
+}
+
+export interface TestManyAsyncOptions extends TestManyOptions {
+  /**
+   * Avoid snapshotting input bytes before dispatch. This reduces admission
+   * overhead, but every backing store must remain attached, the same size, and
+   * unmodified until the returned Promise settles.
+   */
+  readonly unsafe?: boolean
 }
 
 const MAX_BATCH_INPUT_COUNT = 2 ** 20
@@ -54,15 +63,7 @@ export function normalizeInputs(inputs: unknown): BinaryView[] {
   return normalized
 }
 
-export function normalizeBatchSize(options: TestManyOptions | undefined): number {
-  if (options === undefined) {
-    return 0
-  }
-  if (typeof options !== 'object' || options === null) {
-    throw new TypeError('options must be an object')
-  }
-
-  const { batchSize } = options
+function normalizeBatchSizeValue(batchSize: unknown): number {
   if (batchSize === undefined) {
     return 0
   }
@@ -76,4 +77,29 @@ export function normalizeBatchSize(options: TestManyOptions | undefined): number
     throw new RangeError('batchSize must be a positive safe integer or Infinity')
   }
   return batchSize
+}
+
+function validateOptions(options: object | undefined): void {
+  if (options === undefined) {
+    return
+  }
+  if (typeof options !== 'object' || options === null) {
+    throw new TypeError('options must be an object')
+  }
+}
+
+export function normalizeBatchSize(options: TestManyOptions | undefined): number {
+  validateOptions(options)
+  return normalizeBatchSizeValue(options?.batchSize)
+}
+
+export function normalizeAsyncOptions(
+  options: TestManyAsyncOptions | undefined
+): readonly [batchSize: number, unsafe: boolean] {
+  validateOptions(options)
+  const unsafe = options?.unsafe
+  if (unsafe !== undefined && typeof unsafe !== 'boolean') {
+    throw new TypeError('unsafe must be a boolean')
+  }
+  return [normalizeBatchSizeValue(options?.batchSize), unsafe ?? false]
 }
