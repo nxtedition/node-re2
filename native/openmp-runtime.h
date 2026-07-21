@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 
 #ifdef NODE_RE2_OPENMP
@@ -23,14 +24,14 @@ inline size_t ObserveBatchParallelism(const BatchPlan& plan) {
 #ifdef NODE_RE2_OPENMP
   if (plan.thread_count > 1) {
     std::lock_guard submission_lock(OpenMpSubmissionMutex());
-    size_t observed = 1;
+    std::atomic<size_t> observed{1};
 
 #pragma omp parallel num_threads(plan.thread_count)
     {
 #pragma omp single
-      observed = static_cast<size_t>(omp_get_num_threads());
+      observed.store(static_cast<size_t>(omp_get_num_threads()), std::memory_order_relaxed);
     }
-    return observed;
+    return observed.load(std::memory_order_relaxed);
   }
 #endif
   return plan.thread_count;

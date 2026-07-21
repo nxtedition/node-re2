@@ -313,6 +313,9 @@ bool GetTexts(napi_env env, napi_value value, std::vector<std::string_view>* tex
 }
 
 bool GetTextBatch(napi_env env, napi_value value, TextBatch* texts) {
+  texts->bytes.clear();
+  texts->offsets.clear();
+
   std::vector<napi_value> inputs;
   if (!GetInputValues(env, value, &inputs)) {
     return false;

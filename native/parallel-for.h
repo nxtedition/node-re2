@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <exception>
+#include <mutex>
 
 #include "batch-plan.h"
 #include "openmp-runtime.h"
@@ -17,6 +18,7 @@ void ParallelFor(size_t size, size_t total_bytes, size_t requested_batch_size, F
   if (plan.thread_count > 1) {
     std::lock_guard submission_lock(OpenMpSubmissionMutex());
     std::atomic<bool> stopped{false};
+    std::mutex error_mutex;
     std::exception_ptr error;
     const std::ptrdiff_t work_count = static_cast<std::ptrdiff_t>(plan.work_count);
 
@@ -33,13 +35,17 @@ void ParallelFor(size_t size, size_t total_bytes, size_t requested_batch_size, F
         }
       } catch (...) {
         if (!stopped.exchange(true, std::memory_order_acq_rel)) {
+          std::lock_guard error_lock(error_mutex);
           error = std::current_exception();
         }
       }
     }
 
-    if (error != nullptr) {
-      std::rethrow_exception(error);
+    {
+      std::lock_guard error_lock(error_mutex);
+      if (error != nullptr) {
+        std::rethrow_exception(error);
+      }
     }
     return;
   }
