@@ -672,7 +672,7 @@ test(
 
     assert.equal(result.signal, null)
     assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /libgomp[.]so[.]1/)
+    assert.match(result.stdout, /libgomp[.]so[.]1 => \//)
   }
 )
 

@@ -54,7 +54,7 @@ test('only the Linux prebuild enables dynamic GNU OpenMP', () => {
   )
 
   assert.match(dockerfile, /NODE_RE2_OPENMP=1 NODE_RE2_MARCH=znver3/)
-  assert.match(dockerfile, /ldd .* \| grep -F libgomp[.]so[.]1/)
+  assert.match(dockerfile, /ldd .* \| grep -E 'libgomp\[\.\]so\[\.\]1 => \/'/)
   assert.match(binding, /node_re2_openmp%.*NODE_RE2_OPENMP === '1'/)
   assert.match(binding, /node_re2_openmp==1.*-fopenmp/s)
   assert.match(darwin, /NODE_RE2_OPENMP=0/)

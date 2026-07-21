@@ -26,7 +26,7 @@ RUN npm run build:ts && \
 
 # The published Linux binary intentionally relies on Debian's GNU OpenMP
 # runtime instead of embedding another thread-pool implementation.
-RUN ldd prebuilds/linux-x64/@nxtedition+re2.glibc.node | grep -F libgomp.so.1
+RUN ldd prebuilds/linux-x64/@nxtedition+re2.glibc.node | grep -E 'libgomp[.]so[.]1 => /'
 
 # PREBUILDS_ONLY makes node-gyp-build ignore build/Release, proving that the
 # binary which will be embedded in the npm tarball is independently loadable.

@@ -167,6 +167,7 @@ void RegexTestManyComplete(napi_env env, napi_status status, void* data) {
   const napi_status release_status = ReleaseAsyncBatch(env, &work->inputs);
 
   if (status == napi_cancelled) {
+    RejectDeferred(env, work->deferred, "RE2 batch matching was cancelled");
     return;
   }
   if (status != napi_ok) {
